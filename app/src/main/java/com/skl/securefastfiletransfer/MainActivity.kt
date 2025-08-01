@@ -61,7 +61,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 
@@ -674,7 +674,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Folder,
+                                    imageVector = Icons.Default.FolderOpen,
                                     contentDescription = "Open folder",
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(20.dp)
