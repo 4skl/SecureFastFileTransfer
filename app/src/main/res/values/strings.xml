@@ -1,3 +1,68 @@
 <resources>
     <string name="app_name">SecureFastFileTransfer</string>
+    <string name="app_description">Secure file transfer with WiFi and AES encryption</string>
+    
+    <!-- Main Navigation -->
+    <string name="nav_send">Send Files</string>
+    <string name="nav_receive">Receive Files</string>
+    <string name="nav_settings">Settings</string>
+    <string name="nav_history">Transfer History</string>
+    
+    <!-- Security Features -->
+    <string name="security_title">Secure Transfer</string>
+    <string name="security_description">Files are encrypted with AES-256 encryption</string>
+    <string name="qr_code_title">QR Code Sharing</string>
+    <string name="qr_code_description">Share encryption key securely via QR code</string>
+    <string name="manual_key_title">Manual Key Entry</string>
+    <string name="manual_key_description">Enter encryption key manually</string>
+    
+    <!-- WiFi Connection -->
+    <string name="wifi_title">WiFi Direct Connection</string>
+    <string name="wifi_description">Fast transfer over local WiFi network</string>
+    <string name="wifi_status_connected">Connected</string>
+    <string name="wifi_status_connecting">Connecting…</string>
+    <string name="wifi_status_disconnected">Disconnected</string>
+    
+    <!-- File Transfer -->
+    <string name="transfer_title">File Transfer</string>
+    <string name="transfer_progress">Transfer Progress</string>
+    <string name="transfer_complete">Transfer Complete</string>
+    <string name="transfer_failed">Transfer Failed</string>
+    <string name="transfer_cancelled">Transfer Cancelled</string>
+    
+    <!-- Actions -->
+    <string name="action_send">Send</string>
+    <string name="action_receive">Receive</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_select_files">Select Files</string>
+    <string name="action_generate_qr">Generate QR Code</string>
+    <string name="action_scan_qr">Scan QR Code</string>
+    
+    <!-- Status Messages -->
+    <string name="status_ready">Ready for transfer</string>
+    <string name="status_encrypting">Encrypting files…</string>
+    <string name="status_decrypting">Decrypting files…</string>
+    <string name="status_sending">Sending files…</string>
+    <string name="status_receiving">Receiving files…</string>
+    
+    <!-- Security Alerts -->
+    <string name="security_warning_title">Security Warning</string>
+    <string name="security_warning_message">Always verify the encryption key before transferring sensitive files</string>
+    <string name="security_key_verified">Encryption key verified</string>
+    <string name="security_key_invalid">Invalid encryption key</string>
+    
+    <!-- Error Messages -->
+    <string name="error_no_wifi">WiFi connection required</string>
+    <string name="error_connection_failed">Connection failed</string>
+    <string name="error_file_not_found">File not found</string>
+    <string name="error_encryption_failed">Encryption failed</string>
+    <string name="error_permission_denied">Permission denied</string>
+    
+    <!-- Content Descriptions for Accessibility -->
+    <string name="cd_security_shield">Security shield icon</string>
+    <string name="cd_wifi_signal">WiFi signal icon</string>
+    <string name="cd_qr_code">QR code for key sharing</string>
+    <string name="cd_file_secure">Secure file icon</string>
+    <string name="cd_transfer_progress">File transfer progress</string>
 </resources>
