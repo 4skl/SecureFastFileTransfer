@@ -642,7 +642,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Text(
-                                        text = "Developed by: Your Name",
+                                        text = "Developed by: 4skl",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold
                                     )
