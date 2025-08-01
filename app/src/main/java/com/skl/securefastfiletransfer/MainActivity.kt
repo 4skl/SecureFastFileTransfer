@@ -795,7 +795,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Developed by: 4skl&AI",
+                            text = "Developed by: 4skl & AI",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center,
