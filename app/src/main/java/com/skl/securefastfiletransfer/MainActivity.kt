@@ -923,8 +923,13 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
     private fun startFileTransfer() {
         if (isSender) {
-            if (selectedFileUri == null || peerIpAddress == null) {
-                status = "Missing file or peer connection"
+            if (selectedFileUri == null) {
+                status = "Missing file"
+                return
+            }
+
+            if(peerIpAddress == null) {
+                status = "Missing peer connection"
                 return
             }
 
