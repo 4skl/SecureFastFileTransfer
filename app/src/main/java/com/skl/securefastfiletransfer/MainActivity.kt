@@ -49,12 +49,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.graphics.asImageBitmap
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
-import android.os.Environment
 import androidx.compose.runtime.LaunchedEffect
-import androidx.documentfile.provider.DocumentFile
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.Composable
 
 class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private lateinit var wifiTransferHelper: WiFiTransferHelper
@@ -75,6 +84,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private var receivedFilePath by mutableStateOf("")
     private var showPermissionDialog by mutableStateOf(false)
     private var showAboutDialog by mutableStateOf(false)
+    private var isSearchingDevices by mutableStateOf(false)
 
     // Permission request launcher
     private val permissionLauncher = registerForActivityResult(
@@ -110,7 +120,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             val scannedSecret = result.contents
             if (QRCodeHelper.isValidSecret(scannedSecret)) {
                 handshakeSecret = scannedSecret
-                displayedSecret = scannedSecret.take(12) + "..."
+                displayedSecret = scannedSecret
                 status = "Secret scanned! Connecting to sender..."
                 waitingForSecret = false
                 startWifiTransfer()
@@ -130,6 +140,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 val filePath = intent.getStringExtra("file_path")
 
                 runOnUiThread {
+                    isSearchingDevices = false
                     status = message
                     if (success) {
                         if (!isSender && filePath != null) {
@@ -154,7 +165,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             // Generate secret immediately when file is selected
             val generatedSecret = UUID.randomUUID().toString()
             handshakeSecret = generatedSecret
-            displayedSecret = generatedSecret.take(12) + "..."
+            displayedSecret = generatedSecret
             status = "File selected: $fileName. Share the QR code or secret with receiver."
 
             // Generate QR code
@@ -179,6 +190,15 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
         enableEdgeToEdge()
         setContent {
+            MainContent()
+        }
+    }
+
+    @Composable
+    private fun MainContent() {
+        MaterialTheme {
+            val clipboardManager = LocalClipboardManager.current
+
             Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                 Column(
                     modifier = Modifier
@@ -188,10 +208,11 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Secure File Transfer",
+                        text = "🔐 Secure File Transfer",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.primary
                     )
 
                     // Information card explaining how to use the app
@@ -203,7 +224,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                             modifier = Modifier.padding(16.dp)
                         ) {
                             Text(
-                                text = "🔒 How it works:",
+                                text = "📱 How it works:",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -225,18 +246,33 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
+                    // Status card with search indicator
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
-                        Text(
-                            text = status,
+                        Row(
                             modifier = Modifier.padding(16.dp),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            if (isSearchingDevices) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                            }
+                            Text(
+                                text = if (isSearchingDevices) "🔍 Searching for devices..." else status,
+                                style = MaterialTheme.typography.bodyLarge,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
                     Button(
@@ -246,9 +282,9 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                             status = "Select a file to send"
                             pickFileLauncher.launch("*/*")
                         },
-                        enabled = !waitingForSecret
+                        enabled = !waitingForSecret && !isSearchingDevices
                     ) {
-                        Text("Send File")
+                        Text("📤 Send File")
                     }
 
                     Button(
@@ -259,9 +295,9 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                             // Open directory picker for receiver
                             directoryPickerLauncher.launch(null)
                         },
-                        enabled = !waitingForSecret
+                        enabled = !waitingForSecret && !isSearchingDevices
                     ) {
-                        Text("Receive File")
+                        Text("📥 Receive File")
                     }
 
                     if (displayedSecret.isNotEmpty()) {
@@ -274,22 +310,54 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = "Secret Code:",
+                                    text = "🔑 Secret Code:",
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = handshakeSecret ?: "", // Show full secret instead of truncated
-                                    style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp)
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // Selectable secret text with copy button
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        SelectionContainer(
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text = handshakeSecret ?: "",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(handshakeSecret ?: ""))
+                                                Toast.makeText(this@MainActivity, "Secret copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = "Copy secret",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = "Show this QR code to the receiver or verify codes match!",
+                                    text = "Share this secret with the receiver device!",
                                     style = MaterialTheme.typography.bodySmall,
-                                    textAlign = TextAlign.Center
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
 
                                 if (isSender && qrCodeBitmap != null) {
@@ -299,7 +367,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                             showQRCode = true
                                         }
                                     ) {
-                                        Text("Show QR Code")
+                                        Text("📱 Show QR Code")
                                     }
                                 }
                             }
@@ -322,7 +390,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                 qrScannerLauncher.launch(options)
                             }
                         ) {
-                            Text("Scan QR Code")
+                            Text("📷 Scan QR Code")
                         }
                     }
 
@@ -333,338 +401,424 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                 showManualSecretDialog = true
                             }
                         ) {
-                            Text("Enter Secret Manually")
+                            Text("⌨️ Enter Secret Manually")
                         }
                     }
 
-                    if (showConfirmDialog) {
-                        AlertDialog(
-                            onDismissRequest = {},
-                            title = {
-                                if (isSender) {
-                                    Text("Ready to Send File")
-                                } else {
-                                    Text("Ready to Receive File")
-                                }
-                            },
-                            text = {
-                                Column {
-                                    Text(
-                                        text = if (isSender) {
-                                            "Connected to receiver device! Do the secret codes match on both screens?"
-                                        } else {
-                                            "Connected to sender device! Do the secret codes match on both screens?"
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-
-                                    // Show secret key for verification
-                                    Text(
-                                        text = "Secret Key:",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                                    ) {
-                                        Text(
-                                            text = handshakeSecret ?: "",
-                                            modifier = Modifier.padding(8.dp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            textAlign = TextAlign.Center,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    if (!isSender) {
-                                        Text(
-                                            text = "⚠️ RECEIVER: Please confirm first to prepare for file reception",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    } else {
-                                        Text(
-                                            text = "📤 SENDER: Wait for receiver to confirm first, then confirm to start sending",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.secondary,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showConfirmDialog = false
-                                    startFileTransfer()
-                                }) {
-                                    Text(if (isSender) "Start Sending" else "Ready to Receive")
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = {
-                                    showConfirmDialog = false
-                                    resetToIdle()
-                                }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
-                    if (showQRCode) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showQRCode = false
-                            },
-                            title = { Text("Share QR Code") },
-                            text = {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(
-                                        text = "Show this QR code to the receiver to share the secret.",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    // QR code image
-                                    qrCodeBitmap?.let { bitmap ->
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = "QR Code",
-                                            modifier = Modifier.size(250.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    // Show the actual secret key text
-                                    Text(
-                                        text = "Secret Key:",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                                    ) {
-                                        Text(
-                                            text = handshakeSecret ?: "",
-                                            modifier = Modifier.padding(8.dp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            textAlign = TextAlign.Center,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    }
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showQRCode = false
-                                    // Start WiFi transfer after showing QR code
-                                    startWifiTransfer()
-                                }) { Text("Continue") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = {
-                                    showQRCode = false
-                                    resetToIdle()
-                                }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
-                    if (showManualSecretDialog) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showManualSecretDialog = false
-                            },
-                            title = { Text("Enter Secret Manually") },
-                            text = {
-                                Column {
-                                    Text(
-                                        text = "Enter the complete secret code from the sender's device.",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    // Text field for manual secret input
-                                    TextField(
-                                        value = manualSecretInput,
-                                        onValueChange = { manualSecretInput = it },
-                                        label = { Text("Secret Code") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    // Verify and proceed with manual secret
-                                    if (manualSecretInput.length >= 30) { // UUID length
-                                        handshakeSecret = manualSecretInput
-                                        displayedSecret = manualSecretInput.take(12)
-                                        status = "Secret received! Connecting to sender..."
-                                        showManualSecretDialog = false
-                                        waitingForSecret = false
-                                        manualSecretInput = "" // Clear the input
-                                        startWifiTransfer()
-                                    } else {
-                                        Toast.makeText(this@MainActivity, "Please enter the complete secret code (should be around 36 characters)", Toast.LENGTH_LONG).show()
-                                    }
-                                }) { Text("Confirm Secret") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = {
-                                    showManualSecretDialog = false
-                                    manualSecretInput = "" // Clear the input
-                                    resetToIdle()
-                                }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
-                    // Show received file dialog
-                    if (showFileReceivedDialog) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showFileReceivedDialog = false
-                            },
-                            title = { Text("File Received Successfully! 🎉") },
-                            text = {
-                                Column {
-                                    Text(
-                                        text = "The file has been received and decrypted successfully.",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-
-                                    Text(
-                                        text = "Saved to:",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-
-                                    // Clickable file path
-                                    Text(
-                                        text = receivedFilePath,
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            textDecoration = TextDecoration.Underline
-                                        ),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                openFileLocation(receivedFilePath)
-                                            }
-                                            .padding(4.dp)
-                                    )
-
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "📁 Tap the path above to open the file location",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showFileReceivedDialog = false
-                                }) { Text("OK") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = {
-                                    showFileReceivedDialog = false
-                                    openFileLocation(receivedFilePath)
-                                }) { Text("Open Location") }
-                            }
-                        )
-                    }
-
-                    // Request permissions if not granted
-                    if (waitingForSecret && !hasRequiredPermissions()) {
-                        LaunchedEffect(Unit) {
-                            // Show permission rationale and request permissions
-                            showPermissionDialog = true
-                        }
-                    }
-
-                    if (showPermissionDialog) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showPermissionDialog = false
-                            },
-                            title = { Text("Permissions Required") },
-                            text = {
-                                Text(
-                                    text = "This app requires certain permissions to be granted for file transfer to work. Please allow the required permissions.",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showPermissionDialog = false
-                                    // Request permissions
-                                    requestRequiredPermissions()
-                                }) { Text("Grant Permissions") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = {
-                                    showPermissionDialog = false
-                                    resetToIdle()
-                                }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
-                    // About dialog
-                    if (showAboutDialog) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showAboutDialog = false
-                            },
-                            title = { Text("About Secure File Transfer") },
-                            text = {
-                                Column {
-                                    Text(
-                                        text = "This app allows secure file transfer between devices using Wi-Fi Direct and QR codes. Files are encrypted with AES-256 for security.",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "• Wi-Fi Direct: Connects devices directly via Wi-Fi for fast transfer speeds.\n" +
-                                                "• QR Codes: Scan to quickly share secret keys for connection.\n" +
-                                                "• AES-256 Encryption: Strong encryption to keep your files secure during transfer.",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "Developed by: 4skl",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showAboutDialog = false
-                                }) { Text("Close") }
-                            }
-                        )
-                    }
+                    // All the existing dialogs...
+                    ShowDialogs(clipboardManager)
                 }
             }
         }
     }
 
+    @Composable
+    private fun ShowDialogs(clipboardManager: androidx.compose.ui.platform.ClipboardManager) {
+        // Show all the dialogs: confirm, QR, manual secret, file received, permissions, about
+        if (showConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = {},
+                title = {
+                    Text(
+                        if (isSender) "📤 Ready to Send File" else "📥 Ready to Receive File",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = if (isSender) {
+                                "Connected to receiver device! Verify the secret codes match on both screens before proceeding."
+                            } else {
+                                "Connected to sender device! Verify the secret codes match on both screens before proceeding."
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Show secret key for verification
+                        Text(
+                            text = "🔑 Secret Key:",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    text = handshakeSecret ?: "",
+                                    modifier = Modifier.padding(8.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        if (!isSender) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                            ) {
+                                Text(
+                                    text = "⚠️ RECEIVER: Please confirm first to prepare for file reception",
+                                    modifier = Modifier.padding(8.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        } else {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            ) {
+                                Text(
+                                    text = "📤 SENDER: Wait for receiver to confirm first, then confirm to start sending",
+                                    modifier = Modifier.padding(8.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showConfirmDialog = false
+                        startFileTransfer()
+                    }) {
+                        Text(if (isSender) "✅ Start Sending" else "✅ Ready to Receive")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showConfirmDialog = false
+                        resetToIdle()
+                    }) { Text("❌ Cancel") }
+                }
+            )
+        }
+
+        if (showQRCode) {
+            AlertDialog(
+                onDismissRequest = {
+                    showQRCode = false
+                },
+                title = {
+                    Text(
+                        "📱 Share QR Code",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Show this QR code to the receiver to share the secret.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        // QR code image
+                        qrCodeBitmap?.let { bitmap ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                            ) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "QR Code",
+                                    modifier = Modifier
+                                        .size(250.dp)
+                                        .padding(8.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        // Show the actual secret key text
+                        Text(
+                            text = "🔑 Secret Key:",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    text = handshakeSecret ?: "",
+                                    modifier = Modifier.padding(8.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showQRCode = false
+                        // Start WiFi transfer after showing QR code
+                        startWifiTransfer()
+                    }) { Text("✅ Continue") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showQRCode = false
+                        resetToIdle()
+                    }) { Text("❌ Cancel") }
+                }
+            )
+        }
+
+        // Continue with other dialogs...
+        if (showManualSecretDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showManualSecretDialog = false
+                },
+                title = {
+                    Text(
+                        "⌨️ Enter Secret Manually",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "Enter the complete secret code from the sender's device.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        // Text field for manual secret input
+                        TextField(
+                            value = manualSecretInput,
+                            onValueChange = { manualSecretInput = it },
+                            label = { Text("Secret Code") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        // Verify and proceed with manual secret
+                        if (manualSecretInput.length >= 30) { // UUID length
+                            handshakeSecret = manualSecretInput
+                            displayedSecret = manualSecretInput
+                            status = "Secret received! Connecting to sender..."
+                            showManualSecretDialog = false
+                            waitingForSecret = false
+                            manualSecretInput = "" // Clear the input
+                            startWifiTransfer()
+                        } else {
+                            Toast.makeText(this@MainActivity, "Please enter the complete secret code (should be around 36 characters)", Toast.LENGTH_LONG).show()
+                        }
+                    }) { Text("✅ Confirm Secret") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showManualSecretDialog = false
+                        manualSecretInput = "" // Clear the input
+                        resetToIdle()
+                    }) { Text("❌ Cancel") }
+                }
+            )
+        }
+
+        // Show received file dialog
+        if (showFileReceivedDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showFileReceivedDialog = false
+                },
+                title = {
+                    Text(
+                        "🎉 File Received Successfully!",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "The file has been received and decrypted successfully.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "📁 Saved to:",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // Clickable file path with folder icon
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .clickable {
+                                        openFileLocation(receivedFilePath)
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = "Open folder",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = receivedFilePath,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        textDecoration = TextDecoration.Underline
+                                    ),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "📁 Tap the path above to open the file location",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showFileReceivedDialog = false
+                    }) { Text("✅ OK") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showFileReceivedDialog = false
+                        openFileLocation(receivedFilePath)
+                    }) { Text("📁 Open Location") }
+                }
+            )
+        }
+
+        // Rest of dialogs (permissions, about)...
+        if (waitingForSecret && !hasRequiredPermissions()) {
+            LaunchedEffect(Unit) {
+                showPermissionDialog = true
+            }
+        }
+
+        if (showPermissionDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showPermissionDialog = false
+                },
+                title = {
+                    Text(
+                        "🔐 Permissions Required",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Text(
+                        text = "This app requires certain permissions to be granted for file transfer to work. Please allow the required permissions.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showPermissionDialog = false
+                        requestRequiredPermissions()
+                    }) { Text("✅ Grant Permissions") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showPermissionDialog = false
+                        resetToIdle()
+                    }) { Text("❌ Cancel") }
+                }
+            )
+        }
+
+        if (showAboutDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showAboutDialog = false
+                },
+                title = {
+                    Text(
+                        "ℹ️ About Secure File Transfer",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "This app allows secure file transfer between devices using Wi-Fi Direct and QR codes. Files are encrypted with AES-256 for security.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "🔒 Security Features:",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "• Wi-Fi Direct: Direct device connection without internet\n" +
+                                            "• QR Codes: Quick and secure secret key sharing\n" +
+                                            "• AES-256 Encryption: Military-grade file encryption\n" +
+                                            "• No cloud storage: Files stay on your devices",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Developed by: 4skl&AI",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showAboutDialog = false
+                    }) { Text("✅ Close") }
+                }
+            )
+        }
+    }
+
+    // Required helper functions
     private fun resetState() {
         handshakeSecret = null
         displayedSecret = ""
         selectedFileUri = null
         peerIpAddress = null
+        isSearchingDevices = false
     }
 
     private fun resetToIdle() {
@@ -685,69 +839,84 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-    }
+    private fun hasRequiredPermissions(): Boolean {
+        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.ACCESS_WIFI_STATE,
+                Manifest.permission.CHANGE_WIFI_STATE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_WIFI_STATE,
+                Manifest.permission.CHANGE_WIFI_STATE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        }
 
-    override fun onPause() {
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        unregisterReceiver(fileTransferReceiver)
-        wifiTransferHelper.cleanup()
-    }
-
-    // WiFiTransferHelper.TransferListener implementation
-    override fun onTransferProgress(bytesTransferred: Long, totalBytes: Long) {
-        runOnUiThread {
-            val progress = (bytesTransferred * 100 / totalBytes).toInt()
-            status = "Transfer progress: $progress%"
+        return requiredPermissions.all { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
         }
     }
 
-    override fun onTransferComplete(success: Boolean, message: String) {
-        runOnUiThread {
-            status = message
-            if (success) {
-                Toast.makeText(this, "Transfer completed successfully!", Toast.LENGTH_LONG).show()
-                resetToIdle()
-            } else {
-                Toast.makeText(this, "Transfer failed: $message", Toast.LENGTH_LONG).show()
+    private fun requestRequiredPermissions() {
+        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.ACCESS_WIFI_STATE,
+                Manifest.permission.CHANGE_WIFI_STATE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_WIFI_STATE,
+                Manifest.permission.CHANGE_WIFI_STATE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        }
+
+        permissionLauncher.launch(requiredPermissions)
+    }
+
+    private fun openFileLocation(filePath: String) {
+        try {
+            val file = File(filePath)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.fromFile(file.parentFile), "resource/folder")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-        }
-    }
 
-    override fun onPeerDiscovered(peerIp: String) {
-        runOnUiThread {
-            status = "Found peer device on network: $peerIp"
-        }
-    }
-
-    override fun onConnectionEstablished(peerIp: String) {
-        runOnUiThread {
-            peerIpAddress = peerIp
-            if (isSender) {
-                status = "Connected to receiver device. Verifying secrets..."
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivity(intent)
             } else {
-                status = "Connected to sender device. Verifying secrets..."
+                val fileIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.fromFile(file), "*/*")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                }
+                if (fileIntent.resolveActivity(packageManager) != null) {
+                    startActivity(fileIntent)
+                } else {
+                    Toast.makeText(this, "No file manager found. File saved at: $filePath", Toast.LENGTH_LONG).show()
+                }
             }
-            showConfirmDialog = true
+        } catch (_: Exception) {
+            Toast.makeText(this, "Cannot open file location. File saved at: $filePath", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun startWifiTransfer() {
         if (handshakeSecret != null) {
+            isSearchingDevices = true
             wifiTransferHelper.setTransferListener(this)
             if (isSender) {
-                status = "Starting as sender. Searching for receiver device..."
+                status = "Starting as sender..."
                 wifiTransferHelper.startSender(handshakeSecret!!)
             } else {
-                status = "Starting as receiver. Searching for sender device..."
+                status = "Starting as receiver..."
                 wifiTransferHelper.startReceiver(handshakeSecret!!)
-                // Don't start file receiver here - wait for connection to be established
-                // It will be started in startFileTransfer() with the correct save directory
             }
         }
     }
@@ -769,7 +938,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             wifiTransferHelper.sendFile(filePath, peerIpAddress!!)
         } else {
             status = "Ready to receive encrypted file..."
-            // Pass the selected directory to the file receiver
             wifiTransferHelper.startFileReceiver(selectedSaveDirectory)
         }
     }
@@ -790,142 +958,62 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         }
     }
 
-    fun onSecretVerified(groupOwnerAddress: String?) {
+    // WiFiTransferHelper.TransferListener implementation
+    override fun onTransferProgress(bytesTransferred: Long, totalBytes: Long) {
         runOnUiThread {
-            if (isSender && groupOwnerAddress != null) {
-                this@MainActivity.peerIpAddress = groupOwnerAddress
+            val progress = (bytesTransferred * 100 / totalBytes).toInt()
+            status = "Transfer progress: $progress%"
+        }
+    }
+
+    override fun onTransferComplete(success: Boolean, message: String) {
+        runOnUiThread {
+            isSearchingDevices = false
+            status = message
+            if (success) {
+                Toast.makeText(this, "Transfer completed successfully!", Toast.LENGTH_LONG).show()
+                resetToIdle()
+            } else {
+                Toast.makeText(this, "Transfer failed: $message", Toast.LENGTH_LONG).show()
             }
-            status = "Connection established! Secrets match."
+        }
+    }
+
+    override fun onPeerDiscovered(peerIp: String) {
+        runOnUiThread {
+            status = "Found peer device on network: $peerIp"
+            isSearchingDevices = false
+        }
+    }
+
+    override fun onConnectionEstablished(peerIp: String) {
+        runOnUiThread {
+            peerIpAddress = peerIp
+            isSearchingDevices = false
+            if (isSender) {
+                status = "Connected to receiver device. Verifying secrets..."
+            } else {
+                status = "Connected to sender device. Verifying secrets..."
+            }
             showConfirmDialog = true
         }
     }
 
-    fun onSecretRejected() {
-        runOnUiThread {
-            status = "Secret verification failed! Connection rejected for security."
-            Toast.makeText(this@MainActivity, "Security check failed - secrets don't match!", Toast.LENGTH_LONG).show()
-            resetToIdle()
-        }
+    override fun onResume() {
+        super.onResume()
     }
 
-    private fun requestRequiredPermissions() {
-        val permissions = mutableListOf<String>()
-
-        // Add permissions based on Android version
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.addAll(listOf(
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO,
-                Manifest.permission.READ_MEDIA_AUDIO,
-                Manifest.permission.CAMERA
-            ))
-        } else {
-            permissions.addAll(listOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.CAMERA
-            ))
-        }
-
-        permissions.addAll(listOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_WIFI_STATE,
-            Manifest.permission.CHANGE_WIFI_STATE
-        ))
-
-        permissionLauncher.launch(permissions.toTypedArray())
+    override fun onPause() {
+        super.onPause()
     }
 
-    private fun hasRequiredPermissions(): Boolean {
-        val cameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        val locationPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val wifiPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED
-
-        val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        }
-
-        return cameraPermission && locationPermission && wifiPermission && storagePermission
-    }
-
-    private fun openFileLocation(filePath: String) {
+    override fun onDestroy() {
+        super.onDestroy()
         try {
-            val intent = Intent(Intent.ACTION_VIEW)
-
-            // Check if it's a URI or file path
-            if (filePath.startsWith("content://")) {
-                // Handle DocumentFile URI
-                val uri = Uri.parse(filePath)
-                val documentFile = DocumentFile.fromSingleUri(this, uri)
-
-                if (documentFile != null) {
-                    // Try to open the parent directory
-                    val parentUri = documentFile.parentFile?.uri
-                    if (parentUri != null) {
-                        intent.setDataAndType(parentUri, "resource/folder")
-                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-                        try {
-                            startActivity(intent)
-                            return
-                        } catch (e: Exception) {
-                            // Fallback to opening the file itself
-                            val fileIntent = Intent(Intent.ACTION_VIEW)
-                            fileIntent.setDataAndType(uri, "*/*")
-                            fileIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            fileIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(Intent.createChooser(fileIntent, "Open file with"))
-                            return
-                        }
-                    }
-                }
-            } else {
-                // Handle regular file path
-                val file = File(filePath)
-                val parentDir = file.parentFile
-
-                if (parentDir != null && parentDir.exists()) {
-                    // Try to open the directory using file manager
-                    val directoryUri = androidx.core.content.FileProvider.getUriForFile(
-                        this,
-                        "${packageName}.fileprovider",
-                        parentDir
-                    )
-
-                    intent.setDataAndType(directoryUri, "resource/folder")
-                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-                    try {
-                        startActivity(intent)
-                        return
-                    } catch (e: Exception) {
-                        // Fallback: try to open the file itself
-                        val fileUri = androidx.core.content.FileProvider.getUriForFile(
-                            this,
-                            "${packageName}.fileprovider",
-                            file
-                        )
-
-                        val fileIntent = Intent(Intent.ACTION_VIEW)
-                        fileIntent.setDataAndType(fileUri, "*/*")
-                        fileIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        fileIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(Intent.createChooser(fileIntent, "Open file with"))
-                        return
-                    }
-                }
-            }
-
-            // Final fallback: show toast with path
-            Toast.makeText(this, "File saved to: $filePath", Toast.LENGTH_LONG).show()
-
-        } catch (e: Exception) {
-            Toast.makeText(this, "Cannot open file location: ${e.message}", Toast.LENGTH_LONG).show()
+            unregisterReceiver(fileTransferReceiver)
+        } catch (_: Exception) {
+            // Receiver may not be registered
         }
+        wifiTransferHelper.cleanup()
     }
 }
