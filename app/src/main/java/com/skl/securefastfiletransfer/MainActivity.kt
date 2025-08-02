@@ -1025,11 +1025,28 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 return
             }
 
-            status = "Sending encrypted file..."
-            wifiTransferHelper.sendFile(filePath, peerIpAddress!!)
+            status = "Starting encrypted file transfer..."
+            isTransferInProgress = true
+
+            // Use FileTransferService instead of WiFiTransferHelper for file transfer
+            FileTransferService.startService(
+                context = this,
+                action = FileTransferService.ACTION_SEND_FILE,
+                filePath = filePath,
+                hostAddress = peerIpAddress!!,
+                secret = handshakeSecret!!
+            )
         } else {
             status = "Ready to receive encrypted file..."
-            wifiTransferHelper.startFileReceiver(selectedSaveDirectory)
+            isTransferInProgress = true
+
+            // Use FileTransferService instead of WiFiTransferHelper for file reception
+            FileTransferService.startService(
+                context = this,
+                action = FileTransferService.ACTION_RECEIVE_FILE,
+                secret = handshakeSecret!!,
+                saveDirectoryUri = selectedSaveDirectory
+            )
         }
     }
 
