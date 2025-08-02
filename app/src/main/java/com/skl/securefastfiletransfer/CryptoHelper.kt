@@ -4,8 +4,11 @@ import android.util.Base64
 import android.util.Log
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Arrays
 import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 object CryptoHelper {
@@ -14,17 +17,47 @@ object CryptoHelper {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val IV_SIZE = 12 // 96 bits for GCM
     private const val TAG_SIZE = 16 // 128 bits authentication tag
+    private const val PBKDF2_ITERATIONS = 100000
+    private const val SALT_SIZE = 16
+    private const val MIN_SECRET_LENGTH = 8
 
-    fun generateKeyFromSecret(secret: String): SecretKeySpec {
-        // Use SHA-256 to derive a 256-bit key from the secret
-        val digest = MessageDigest.getInstance("SHA-256")
-        val keyBytes = digest.digest(secret.toByteArray(Charsets.UTF_8))
-        return SecretKeySpec(keyBytes, ALGORITHM)
+    private fun generateSalt(): ByteArray {
+        val salt = ByteArray(SALT_SIZE)
+        SecureRandom().nextBytes(salt)
+        return salt
+    }
+
+    fun generateKeyFromSecret(secret: String, salt: ByteArray = generateSalt()): Pair<SecretKeySpec, ByteArray> {
+        // Use PBKDF2 instead of plain SHA-256 for better security
+        val secretChars = secret.toCharArray()
+        return try {
+            val spec = PBEKeySpec(secretChars, salt, PBKDF2_ITERATIONS, 256)
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            val keyBytes = factory.generateSecret(spec).encoded
+            
+            // Clear sensitive data
+            spec.clearPassword()
+            
+            Pair(SecretKeySpec(keyBytes, ALGORITHM), salt)
+        } finally {
+            // Ensure cleanup even if exception occurs
+            Arrays.fill(secretChars, ' ')
+        }
     }
 
     fun encryptFile(fileBytes: ByteArray, secret: String): EncryptedData? {
         return try {
-            val key = generateKeyFromSecret(secret)
+            // Add input validation
+            if (secret.length < MIN_SECRET_LENGTH) {
+                Log.w("CryptoHelper", "Secret is too short, should be at least $MIN_SECRET_LENGTH characters")
+                return null
+            }
+            if (fileBytes.isEmpty()) {
+                Log.w("CryptoHelper", "Cannot encrypt empty file")
+                return null
+            }
+
+            val (key, salt) = generateKeyFromSecret(secret)
             val cipher = Cipher.getInstance(TRANSFORMATION)
 
             // Generate random IV (nonce) for GCM
@@ -36,7 +69,7 @@ object CryptoHelper {
             val encryptedBytes = cipher.doFinal(fileBytes)
 
             Log.d("CryptoHelper", "File encrypted successfully with AES-GCM. Size: ${encryptedBytes.size} bytes")
-            EncryptedData(encryptedBytes, iv)
+            EncryptedData(encryptedBytes, iv, salt)
         } catch (e: Exception) {
             Log.e("CryptoHelper", "AES-GCM encryption failed: ${e.message}")
             null
@@ -45,7 +78,7 @@ object CryptoHelper {
 
     fun decryptFile(encryptedData: EncryptedData, secret: String): ByteArray? {
         return try {
-            val key = generateKeyFromSecret(secret)
+            val (key, _) = generateKeyFromSecret(secret, encryptedData.salt)
             val cipher = Cipher.getInstance(TRANSFORMATION)
             val gcmSpec = GCMParameterSpec(TAG_SIZE * 8, encryptedData.iv)
 
@@ -62,11 +95,12 @@ object CryptoHelper {
 
     data class EncryptedData(
         val data: ByteArray, // Contains encrypted data + authentication tag
-        val iv: ByteArray    // 96-bit nonce for GCM
+        val iv: ByteArray,   // 96-bit nonce for GCM
+        val salt: ByteArray  // Salt used for key derivation
     ) {
         fun toBase64(): String {
-            // Combine IV + encrypted data (with tag) for transmission
-            val combined = iv + data
+            // Combine salt + IV + encrypted data (with tag) for transmission
+            val combined = salt + iv + data
             return Base64.encodeToString(combined, Base64.DEFAULT)
         }
 
@@ -74,11 +108,12 @@ object CryptoHelper {
             fun fromBase64(base64String: String): EncryptedData? {
                 return try {
                     val combined = Base64.decode(base64String, Base64.DEFAULT)
-                    if (combined.size <= IV_SIZE) return null
+                    if (combined.size <= SALT_SIZE + IV_SIZE) return null
 
-                    val iv = combined.sliceArray(0 until IV_SIZE)
-                    val data = combined.sliceArray(IV_SIZE until combined.size)
-                    EncryptedData(data, iv)
+                    val salt = combined.sliceArray(0 until SALT_SIZE)
+                    val iv = combined.sliceArray(SALT_SIZE until SALT_SIZE + IV_SIZE)
+                    val data = combined.sliceArray(SALT_SIZE + IV_SIZE until combined.size)
+                    EncryptedData(data, iv, salt)
                 } catch (e: Exception) {
                     Log.e("CryptoHelper", "Failed to decode base64 encrypted data: ${e.message}")
                     null
@@ -94,6 +129,7 @@ object CryptoHelper {
 
             if (!data.contentEquals(other.data)) return false
             if (!iv.contentEquals(other.iv)) return false
+            if (!salt.contentEquals(other.salt)) return false
 
             return true
         }
@@ -101,6 +137,7 @@ object CryptoHelper {
         override fun hashCode(): Int {
             var result = data.contentHashCode()
             result = 31 * result + iv.contentHashCode()
+            result = 31 * result + salt.contentHashCode()
             return result
         }
     }
