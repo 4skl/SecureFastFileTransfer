@@ -300,6 +300,15 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         Text("📥 Receive File")
                     }
 
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "ℹ️ Note: Location and proximity permissions are required by Android for Wi-Fi scanning and peer discovery, even if the app only scans the local network. These permissions are necessary for secure file transfer to work.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     if (displayedSecret.isNotEmpty()) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -408,14 +417,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     // All the existing dialogs...
                     ShowDialogs(clipboardManager)
                 }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "ℹ️ Note: Location and proximity permissions are required by Android for Wi-Fi scanning and peer discovery, even if the app only scans the local network. These permissions are necessary for secure file transfer to work.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         }
     }
