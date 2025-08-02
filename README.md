@@ -10,7 +10,7 @@ Android application for transferring files between devices on the same local net
 
 [Video demonstration showing the file transfer process between two Android devices](https://github.com/user-attachments/assets/866e1859-77c7-4974-8b6b-01abe0321eec)
 
-![App Screenshot Explaining security features and how the app works,...](demo/Screenshot_20250802-225100.png)
+<img src="demo/Screenshot_20250802-225100.png" alt="App Screenshot" width="400">
 
 ## 🌟 Features
 
