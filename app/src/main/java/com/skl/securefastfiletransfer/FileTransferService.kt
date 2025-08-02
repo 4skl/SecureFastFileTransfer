@@ -80,12 +80,14 @@ class FileTransferService : IntentService("FileTransferService") {
 
             // Send file name first
             dataOutputStream.writeUTF(file.name)
-            // Send encrypted data size
-            dataOutputStream.writeLong(encryptedData.data.size.toLong())
+            // Send salt size and salt
+            dataOutputStream.writeInt(encryptedData.salt.size)
+            dataOutputStream.write(encryptedData.salt)
             // Send IV size and IV
             dataOutputStream.writeInt(encryptedData.iv.size)
             dataOutputStream.write(encryptedData.iv)
-
+            // Send encrypted data size
+            dataOutputStream.writeLong(encryptedData.data.size.toLong())
             // Send encrypted file data
             dataOutputStream.write(encryptedData.data)
 
@@ -120,12 +122,16 @@ class FileTransferService : IntentService("FileTransferService") {
 
             // Receive file name
             val fileName = dataInputStream.readUTF()
-            // Receive encrypted data size
-            val encryptedSize = dataInputStream.readLong()
+            // Receive salt
+            val saltSize = dataInputStream.readInt()
+            val salt = ByteArray(saltSize)
+            dataInputStream.readFully(salt)
             // Receive IV
             val ivSize = dataInputStream.readInt()
             val iv = ByteArray(ivSize)
             dataInputStream.readFully(iv)
+            // Receive encrypted data size
+            val encryptedSize = dataInputStream.readLong()
 
             Log.d("FileTransferService", "Receiving encrypted file: $fileName, size: $encryptedSize bytes")
 
@@ -137,7 +143,7 @@ class FileTransferService : IntentService("FileTransferService") {
             serverSocket.close()
 
             // Decrypt the file
-            val encryptedFileData = CryptoHelper.EncryptedData(encryptedData, iv)
+            val encryptedFileData = CryptoHelper.EncryptedData(encryptedData, iv, salt)
             val decryptedBytes = CryptoHelper.decryptFile(encryptedFileData, secret)
 
             if (decryptedBytes == null) {
