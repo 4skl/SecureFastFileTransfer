@@ -1,3 +1,5 @@
+# !!!! Should work but not reviewed yet !!!!
+
 # 🔐 SecureFastFileTransfer  
 
 Android application for transferring files between devices on the same local network using **AES-256 encryption** with QR code-based secret sharing.
