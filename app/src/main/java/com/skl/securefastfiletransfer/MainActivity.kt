@@ -444,7 +444,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                 val options = ScanOptions().apply {
                                     setPrompt("Scan the sender's QR code")
                                     setBeepEnabled(true)
-                                    setOrientationLocked(false) // Allow rotation for better scanning
+                                    setOrientationLocked(true) // Lock to portrait for better UX
                                     setBarcodeImageEnabled(true)
                                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                                     setCameraId(0) // Use back camera
