@@ -88,6 +88,13 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private var showAboutDialog by mutableStateOf(false)
     private var isSearchingDevices by mutableStateOf(false)
 
+    // Add progress tracking variables
+    private var isTransferInProgress by mutableStateOf(false)
+    private var transferProgress by mutableStateOf(0f)
+    private var transferSpeed by mutableStateOf(0f)
+    private var bytesTransferred by mutableStateOf(0L)
+    private var totalBytes by mutableStateOf(0L)
+
     // Permission request launcher
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -136,24 +143,69 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
     private val fileTransferReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE") {
-                val success = intent.getBooleanExtra("success", false)
-                val message = intent.getStringExtra("message") ?: "Unknown result"
-                val filePath = intent.getStringExtra("file_path")
+            when (intent?.action) {
+                FileTransferService.ACTION_TRANSFER_PROGRESS -> {
+                    val bytesProcessed = intent.getLongExtra(FileTransferService.EXTRA_PROGRESS_BYTES, 0)
+                    val totalBytes = intent.getLongExtra(FileTransferService.EXTRA_TOTAL_BYTES, 0)
+                    val speed = intent.getFloatExtra(FileTransferService.EXTRA_TRANSFER_SPEED, 0f)
+                    val isSending = intent.getBooleanExtra(FileTransferService.EXTRA_IS_SENDING, false)
 
-                runOnUiThread {
-                    isSearchingDevices = false
-                    status = message
-                    if (success) {
-                        if (!isSender && filePath != null) {
-                            // Show file received dialog for receiver
-                            receivedFilePath = filePath
-                            showFileReceivedDialog = true
+                    runOnUiThread {
+                        isTransferInProgress = true
+                        this@MainActivity.bytesTransferred = bytesProcessed
+                        this@MainActivity.totalBytes = totalBytes
+                        this@MainActivity.transferSpeed = speed / 1024f // Convert to KB/s
+
+                        if (totalBytes > 0) {
+                            transferProgress = (bytesProcessed.toFloat() / totalBytes.toFloat()) * 100f
+                            val progressPercent = transferProgress.toInt()
+                            val speedText = if (speed > 0) {
+                                val speedKB = speed / 1024f
+                                if (speedKB > 1024) {
+                                    String.format("%.1f MB/s", speedKB / 1024f)
+                                } else {
+                                    String.format("%.1f KB/s", speedKB)
+                                }
+                            } else "Calculating..."
+
+                            status = if (isSending) {
+                                "📤 Sending: $progressPercent% ($speedText)"
+                            } else {
+                                "📥 Receiving: $progressPercent% ($speedText)"
+                            }
+                        } else {
+                            // For receiver without total size
+                            val processedMB = bytesProcessed / (1024f * 1024f)
+                            status = "📥 Receiving: ${String.format("%.1f MB", processedMB)} received"
                         }
-                        Toast.makeText(this@MainActivity, "Transfer completed successfully!", Toast.LENGTH_LONG).show()
-                        resetToIdle()
-                    } else {
-                        Toast.makeText(this@MainActivity, "Transfer failed: $message", Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                FileTransferService.ACTION_TRANSFER_COMPLETE -> {
+                    val success = intent.getBooleanExtra("success", false)
+                    val message = intent.getStringExtra("message") ?: "Unknown result"
+                    val filePath = intent.getStringExtra("file_path")
+
+                    runOnUiThread {
+                        isSearchingDevices = false
+                        isTransferInProgress = false
+                        transferProgress = 0f
+                        transferSpeed = 0f
+                        bytesTransferred = 0L
+                        totalBytes = 0L
+
+                        status = message
+                        if (success) {
+                            if (!isSender && filePath != null) {
+                                // Show file received dialog for receiver
+                                receivedFilePath = filePath
+                                showFileReceivedDialog = true
+                            }
+                            Toast.makeText(this@MainActivity, "Transfer completed successfully!", Toast.LENGTH_LONG).show()
+                            resetToIdle()
+                        } else {
+                            Toast.makeText(this@MainActivity, "Transfer failed: $message", Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
             }
@@ -182,7 +234,10 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         wifiTransferHelper = WiFiTransferHelper(this)
 
         // Register broadcast receiver for file transfer updates
-        val filter = IntentFilter("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+        val filter = IntentFilter().apply {
+            addAction(FileTransferService.ACTION_TRANSFER_PROGRESS)
+            addAction(FileTransferService.ACTION_TRANSFER_COMPLETE)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fileTransferReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -999,6 +1054,14 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         runOnUiThread {
             val progress = (bytesTransferred * 100 / totalBytes).toInt()
             status = "Transfer progress: $progress%"
+            this.bytesTransferred = bytesTransferred
+            this.totalBytes = totalBytes
+            transferProgress = progress.toFloat()
+            transferSpeed = if (isTransferInProgress) {
+                bytesTransferred / 1024f // Convert to KB
+            } else {
+                0f
+            }
         }
     }
 
@@ -1006,6 +1069,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         runOnUiThread {
             isSearchingDevices = false
             status = message
+            isTransferInProgress = false
             if (success) {
                 Toast.makeText(this, "Transfer completed successfully!", Toast.LENGTH_LONG).show()
                 resetToIdle()
