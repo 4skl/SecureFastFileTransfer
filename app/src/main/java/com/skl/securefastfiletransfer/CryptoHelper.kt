@@ -22,7 +22,7 @@ object CryptoHelper {
     private const val PBKDF2_ITERATIONS = 310000 // OWASP 2023 recommendation for PBKDF2-SHA256
     private const val SALT_SIZE = 16
     private const val MIN_SECRET_LENGTH = 8
-    private const val BUFFER_SIZE = 8192 // 8KB chunks for streaming
+    private const val BUFFER_SIZE = 4 * 1024 * 1024 // 4MB chunks for streaming
 
     private fun generateSalt(): ByteArray {
         val salt = ByteArray(SALT_SIZE)
