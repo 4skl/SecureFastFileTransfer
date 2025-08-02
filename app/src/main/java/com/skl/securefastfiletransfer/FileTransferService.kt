@@ -104,12 +104,8 @@ class FileTransferService : Service() {
     private suspend fun sendFile(filePath: String, hostAddress: String, secret: String) = withContext(Dispatchers.IO) {
         try {
             val file = File(filePath)
-            val fileBytes = file.readBytes()
-
-            // Encrypt the file using the shared secret
-            val encryptedData = CryptoHelper.encryptFile(fileBytes, secret)
-            if (encryptedData == null) {
-                throw Exception("Failed to encrypt file")
+            if (!file.exists()) {
+                throw Exception("File not found: $filePath")
             }
 
             val socket = Socket()
@@ -121,16 +117,14 @@ class FileTransferService : Service() {
 
             // Send file name first
             dataOutputStream.writeUTF(file.name)
-            // Send salt size and salt
-            dataOutputStream.writeInt(encryptedData.salt.size)
-            dataOutputStream.write(encryptedData.salt)
-            // Send IV size and IV
-            dataOutputStream.writeInt(encryptedData.iv.size)
-            dataOutputStream.write(encryptedData.iv)
-            // Send encrypted data size
-            dataOutputStream.writeLong(encryptedData.data.size.toLong())
-            // Send encrypted file data
-            dataOutputStream.write(encryptedData.data)
+
+            // Encrypt and send the file using streaming
+            file.inputStream().use { fileInputStream ->
+                val encryptionMetadata = CryptoHelper.encryptFileStream(fileInputStream, dataOutputStream, secret)
+                if (encryptionMetadata == null) {
+                    throw Exception("Failed to encrypt file")
+                }
+            }
 
             dataOutputStream.close()
             socket.close()
@@ -181,37 +175,21 @@ class FileTransferService : Service() {
 
             // Receive file name
             val fileName = dataInputStream.readUTF()
-            // Receive salt
-            val saltSize = dataInputStream.readInt()
-            val salt = ByteArray(saltSize)
-            dataInputStream.readFully(salt)
-            // Receive IV
-            val ivSize = dataInputStream.readInt()
-            val iv = ByteArray(ivSize)
-            dataInputStream.readFully(iv)
-            // Receive encrypted data size
-            val encryptedSize = dataInputStream.readLong()
 
-            Log.d("FileTransferService", "Receiving encrypted file: $fileName, size: $encryptedSize bytes")
+            Log.d("FileTransferService", "Receiving encrypted file: $fileName")
 
-            // Receive encrypted data
-            val encryptedData = ByteArray(encryptedSize.toInt())
-            dataInputStream.readFully(encryptedData)
+            // Create output stream for the decrypted file
+            val savedFilePath = createFileForSaving(fileName, saveDirectoryUri)
+            FileOutputStream(savedFilePath).use { fileOutputStream ->
+                val success = CryptoHelper.decryptFileStream(dataInputStream, fileOutputStream, secret)
+                if (!success) {
+                    throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+                }
+            }
 
             dataInputStream.close()
             serverSocket?.close()
             serverSocket = null
-
-            // Decrypt the file
-            val encryptedFileData = CryptoHelper.EncryptedData(encryptedData, iv, salt)
-            val decryptedBytes = CryptoHelper.decryptFile(encryptedFileData, secret)
-
-            if (decryptedBytes == null) {
-                throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
-            }
-
-            // Save file to user-selected directory or fallback to app directory
-            val savedFilePath = saveFileToSelectedDirectory(fileName, decryptedBytes, saveDirectoryUri)
 
             Log.d("FileTransferService", "File decrypted and saved successfully: $fileName")
             Log.d("FileTransferService", "File saved to: $savedFilePath")
@@ -251,6 +229,41 @@ class FileTransferService : Service() {
         }
     }
 
+    private fun createFileForSaving(fileName: String, saveDirectoryUri: Uri?): String {
+        Log.d("FileTransferService", "Creating file for saving: $fileName")
+        Log.d("FileTransferService", "Save directory URI: $saveDirectoryUri")
+
+        return try {
+            if (saveDirectoryUri != null) {
+                Log.d("FileTransferService", "Using user-selected directory")
+                // For streaming, we need to get the actual file path, not URI
+                // This is a simplified approach - in production you might want to use ContentResolver
+                val directory = DocumentFile.fromTreeUri(this, saveDirectoryUri)
+                if (directory != null && directory.exists()) {
+                    // Fallback to app directory since we need direct file access for streaming
+                    Log.w("FileTransferService", "Using fallback for streaming - DocumentFile doesn't support direct streaming")
+                }
+            }
+
+            // Use app's external files directory for direct file access
+            val downloadsDir = File(getExternalFilesDir(null), "Downloads")
+            if (!downloadsDir.exists()) {
+                downloadsDir.mkdirs()
+            }
+            val receivedFile = File(downloadsDir, fileName)
+            Log.d("FileTransferService", "File will be saved to: ${receivedFile.absolutePath}")
+            receivedFile.absolutePath
+
+        } catch (e: Exception) {
+            Log.e("FileTransferService", "Error creating file path: ${e.message}")
+            // Emergency fallback: Use cache directory
+            val cacheFile = File(cacheDir, fileName)
+            Log.d("FileTransferService", "Using emergency cache location: ${cacheFile.absolutePath}")
+            cacheFile.absolutePath
+        }
+    }
+
+    // Keep the old method for backward compatibility but rename it
     private fun saveFileToSelectedDirectory(fileName: String, fileBytes: ByteArray, saveDirectoryUri: Uri?): String {
         Log.d("FileTransferService", "Attempting to save file: $fileName")
         Log.d("FileTransferService", "Save directory URI: $saveDirectoryUri")

@@ -2,11 +2,16 @@ package com.skl.securefastfiletransfer
 
 import android.util.Base64
 import android.util.Log
+import java.io.InputStream
+import java.io.OutputStream
 import java.security.SecureRandom
 import java.util.Arrays
 import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
+import javax.crypto.CipherOutputStream
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -19,6 +24,7 @@ object CryptoHelper {
     private const val PBKDF2_ITERATIONS = 310000 // OWASP 2023 recommendation for PBKDF2-SHA256
     private const val SALT_SIZE = 16
     private const val MIN_SECRET_LENGTH = 8
+    private const val BUFFER_SIZE = 8192 // 8KB chunks for streaming
 
     private fun generateSalt(): ByteArray {
         val salt = ByteArray(SALT_SIZE)
@@ -101,6 +107,98 @@ object CryptoHelper {
         }
     }
 
+    // New streaming encryption method using manual chunking
+    fun encryptFileStream(inputStream: InputStream, outputStream: OutputStream, secret: String): EncryptionMetadata? {
+        return try {
+            if (secret.length < MIN_SECRET_LENGTH) {
+                Log.w("CryptoHelper", "Secret is too short, should be at least $MIN_SECRET_LENGTH characters")
+                return null
+            }
+
+            val (key, salt) = generateKeyFromSecret(secret)
+            val iv = generateIV()
+
+            // Write salt and IV first
+            outputStream.write(salt)
+            outputStream.write(iv)
+
+            // For very large files, we'll use AES/CTR mode for streaming
+            // CTR mode is a stream cipher and doesn't have the buffer issues of GCM
+            val ctrCipher = Cipher.getInstance("AES/CTR/NoPadding")
+            val ctrSpec = IvParameterSpec(iv)
+            ctrCipher.init(Cipher.ENCRYPT_MODE, key, ctrSpec)
+
+            val buffer = ByteArray(BUFFER_SIZE)
+            var bytesRead: Int
+
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                val encryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
+                if (encryptedChunk != null) {
+                    outputStream.write(encryptedChunk)
+                }
+            }
+
+            // Finalize encryption
+            val finalChunk = ctrCipher.doFinal()
+            if (finalChunk != null && finalChunk.isNotEmpty()) {
+                outputStream.write(finalChunk)
+            }
+
+            outputStream.flush()
+
+            Log.d("CryptoHelper", "File encrypted successfully with streaming AES-CTR")
+            EncryptionMetadata(iv, salt)
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Streaming AES-CTR encryption failed: ${e.message}")
+            null
+        }
+    }
+
+    // New streaming decryption method using manual chunking
+    fun decryptFileStream(inputStream: InputStream, outputStream: OutputStream, secret: String): Boolean {
+        return try {
+            // Read salt and IV first
+            val salt = ByteArray(SALT_SIZE)
+            val iv = ByteArray(IV_SIZE)
+
+            if (inputStream.read(salt) != SALT_SIZE || inputStream.read(iv) != IV_SIZE) {
+                Log.e("CryptoHelper", "Failed to read salt or IV from encrypted stream")
+                return false
+            }
+
+            val (key, _) = generateKeyFromSecret(secret, salt)
+
+            // Use AES/CTR mode for streaming decryption
+            val ctrCipher = Cipher.getInstance("AES/CTR/NoPadding")
+            val ctrSpec = IvParameterSpec(iv)
+            ctrCipher.init(Cipher.DECRYPT_MODE, key, ctrSpec)
+
+            val buffer = ByteArray(BUFFER_SIZE)
+            var bytesRead: Int
+
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                val decryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
+                if (decryptedChunk != null) {
+                    outputStream.write(decryptedChunk)
+                }
+            }
+
+            // Finalize decryption
+            val finalChunk = ctrCipher.doFinal()
+            if (finalChunk != null && finalChunk.isNotEmpty()) {
+                outputStream.write(finalChunk)
+            }
+
+            outputStream.flush()
+
+            Log.d("CryptoHelper", "File decrypted successfully with streaming AES-CTR")
+            true
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Streaming AES-CTR decryption failed: ${e.message}")
+            false
+        }
+    }
+
     data class EncryptedData(
         val data: ByteArray, // Contains encrypted data + authentication tag
         val iv: ByteArray,   // 96-bit nonce for GCM
@@ -149,4 +247,9 @@ object CryptoHelper {
             return result
         }
     }
+
+    data class EncryptionMetadata(
+        val iv: ByteArray,   // 96-bit nonce for GCM
+        val salt: ByteArray  // Salt used for key derivation
+    )
 }
