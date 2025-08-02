@@ -1,25 +1,33 @@
 package com.skl.securefastfiletransfer
 
-import android.app.IntentService
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.IBinder
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.*
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 
-class FileTransferService : IntentService("FileTransferService") {
+class FileTransferService : Service() {
+
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var serverSocket: ServerSocket? = null
 
     companion object {
         const val ACTION_SEND_FILE = "com.skl.securefastfiletransfer.SEND_FILE"
         const val ACTION_RECEIVE_FILE = "com.skl.securefastfiletransfer.RECEIVE_FILE"
+        const val ACTION_STOP_SERVICE = "com.skl.securefastfiletransfer.STOP_SERVICE"
         const val EXTRA_FILE_PATH = "file_path"
         const val EXTRA_HOST = "host_address"
         const val EXTRA_SECRET = "shared_secret"
         const val EXTRA_SAVE_DIRECTORY_URI = "save_directory_uri"
         private const val FILE_TRANSFER_PORT = 8989
+        private const val CONNECTION_TIMEOUT = 30000 // 30 seconds
 
         fun startService(
             context: Context,
@@ -38,10 +46,19 @@ class FileTransferService : IntentService("FileTransferService") {
             }
             context.startService(intent)
         }
+
+        fun stopService(context: Context) {
+            val intent = Intent(context, FileTransferService::class.java).apply {
+                action = ACTION_STOP_SERVICE
+            }
+            context.startService(intent)
+        }
     }
 
-    override fun onHandleIntent(intent: Intent?) {
-        intent ?: return
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        intent ?: return START_NOT_STICKY
 
         when (intent.action) {
             ACTION_SEND_FILE -> {
@@ -49,7 +66,12 @@ class FileTransferService : IntentService("FileTransferService") {
                 val hostAddress = intent.getStringExtra(EXTRA_HOST)
                 val secret = intent.getStringExtra(EXTRA_SECRET)
                 if (filePath != null && hostAddress != null && secret != null) {
-                    sendFile(filePath, hostAddress, secret)
+                    serviceScope.launch {
+                        sendFile(filePath, hostAddress, secret)
+                        stopSelf(startId)
+                    }
+                } else {
+                    stopSelf(startId)
                 }
             }
             ACTION_RECEIVE_FILE -> {
@@ -57,13 +79,29 @@ class FileTransferService : IntentService("FileTransferService") {
                 val saveDirectoryUriString = intent.getStringExtra(EXTRA_SAVE_DIRECTORY_URI)
                 val saveDirectoryUri = saveDirectoryUriString?.let { Uri.parse(it) }
                 if (secret != null) {
-                    receiveFile(secret, saveDirectoryUri)
+                    serviceScope.launch {
+                        receiveFile(secret, saveDirectoryUri)
+                        stopSelf(startId)
+                    }
+                } else {
+                    stopSelf(startId)
                 }
             }
+            ACTION_STOP_SERVICE -> {
+                stopSelf()
+            }
         }
+
+        return START_NOT_STICKY
     }
 
-    private fun sendFile(filePath: String, hostAddress: String, secret: String) {
+    override fun onDestroy() {
+        super.onDestroy()
+        serverSocket?.close()
+        serviceScope.cancel()
+    }
+
+    private suspend fun sendFile(filePath: String, hostAddress: String, secret: String) = withContext(Dispatchers.IO) {
         try {
             val file = File(filePath)
             val fileBytes = file.readBytes()
@@ -74,7 +112,10 @@ class FileTransferService : IntentService("FileTransferService") {
                 throw Exception("Failed to encrypt file")
             }
 
-            val socket = Socket(hostAddress, FILE_TRANSFER_PORT)
+            val socket = Socket()
+            socket.soTimeout = CONNECTION_TIMEOUT
+            socket.connect(java.net.InetSocketAddress(hostAddress, FILE_TRANSFER_PORT), CONNECTION_TIMEOUT)
+            
             val outputStream = socket.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
@@ -98,26 +139,44 @@ class FileTransferService : IntentService("FileTransferService") {
 
             // Broadcast success with consistent action
             val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
             broadcastIntent.putExtra("success", true)
             broadcastIntent.putExtra("message", "File sent successfully")
             sendBroadcast(broadcastIntent)
 
+        } catch (e: SocketTimeoutException) {
+            Log.e("FileTransferService", "Connection timeout while sending file: ${e.message}")
+            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            broadcastIntent.putExtra("success", false)
+            broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
+            sendBroadcast(broadcastIntent)
+        } catch (e: IOException) {
+            Log.e("FileTransferService", "Network error sending file: ${e.message}")
+            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            broadcastIntent.putExtra("success", false)
+            broadcastIntent.putExtra("message", "Network error: ${e.message}")
+            sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error sending file: ${e.message}")
             val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Failed to send file: ${e.message}")
             sendBroadcast(broadcastIntent)
         }
     }
 
-    private fun receiveFile(secret: String, saveDirectoryUri: Uri?) {
+    private suspend fun receiveFile(secret: String, saveDirectoryUri: Uri?) = withContext(Dispatchers.IO) {
         try {
-            val serverSocket = ServerSocket(FILE_TRANSFER_PORT)
+            serverSocket = ServerSocket(FILE_TRANSFER_PORT)
+            serverSocket?.soTimeout = CONNECTION_TIMEOUT
             Log.d("FileTransferService", "Waiting for encrypted file transfer...")
 
-            val socket = serverSocket.accept()
-            val inputStream = socket.getInputStream()
+            val socket = serverSocket?.accept()
+            socket?.soTimeout = CONNECTION_TIMEOUT
+            val inputStream = socket?.getInputStream()
             val dataInputStream = DataInputStream(inputStream)
 
             // Receive file name
@@ -140,7 +199,8 @@ class FileTransferService : IntentService("FileTransferService") {
             dataInputStream.readFully(encryptedData)
 
             dataInputStream.close()
-            serverSocket.close()
+            serverSocket?.close()
+            serverSocket = null
 
             // Decrypt the file
             val encryptedFileData = CryptoHelper.EncryptedData(encryptedData, iv, salt)
@@ -158,17 +218,36 @@ class FileTransferService : IntentService("FileTransferService") {
 
             // Broadcast success with file path and consistent action
             val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
             broadcastIntent.putExtra("success", true)
             broadcastIntent.putExtra("message", "File received and decrypted successfully: $fileName")
             broadcastIntent.putExtra("file_path", savedFilePath)
             sendBroadcast(broadcastIntent)
 
+        } catch (e: SocketTimeoutException) {
+            Log.e("FileTransferService", "Connection timeout while receiving file: ${e.message}")
+            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            broadcastIntent.putExtra("success", false)
+            broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
+            sendBroadcast(broadcastIntent)
+        } catch (e: IOException) {
+            Log.e("FileTransferService", "Network error receiving file: ${e.message}")
+            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            broadcastIntent.putExtra("success", false)
+            broadcastIntent.putExtra("message", "Network error: ${e.message}")
+            sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error receiving file: ${e.message}")
             val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
+            broadcastIntent.setPackage(packageName) // Make intent explicit for security
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Failed to receive file: ${e.message}")
             sendBroadcast(broadcastIntent)
+        } finally {
+            serverSocket?.close()
+            serverSocket = null
         }
     }
 

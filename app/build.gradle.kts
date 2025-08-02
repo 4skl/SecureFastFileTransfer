@@ -50,6 +50,9 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
+    // Kotlin Coroutines for modern async programming
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
+
     // Material Icons Extended for more icons
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
 
