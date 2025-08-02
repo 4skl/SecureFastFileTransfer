@@ -29,6 +29,14 @@ class FileTransferService : Service() {
         private const val FILE_TRANSFER_PORT = 8989
         private const val CONNECTION_TIMEOUT = 30000 // 30 seconds
 
+        // Progress broadcast actions
+        const val ACTION_TRANSFER_PROGRESS = "com.skl.securefastfiletransfer.TRANSFER_PROGRESS"
+        const val ACTION_TRANSFER_COMPLETE = "com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE"
+        const val EXTRA_PROGRESS_BYTES = "progress_bytes"
+        const val EXTRA_TOTAL_BYTES = "total_bytes"
+        const val EXTRA_TRANSFER_SPEED = "transfer_speed"
+        const val EXTRA_IS_SENDING = "is_sending"
+
         fun startService(
             context: Context,
             action: String,
@@ -118,9 +126,29 @@ class FileTransferService : Service() {
             // Send file name first
             dataOutputStream.writeUTF(file.name)
 
-            // Encrypt and send the file using streaming
+            // Progress reporting callback
+            val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
+                // Broadcast progress on main thread to avoid blocking transfer
+                launch(Dispatchers.Main) {
+                    val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
+                    progressIntent.setPackage(packageName)
+                    progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
+                    progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
+                    progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
+                    progressIntent.putExtra(EXTRA_IS_SENDING, true)
+                    sendBroadcast(progressIntent)
+                }
+            }
+
+            // Encrypt and send the file using streaming with progress
             file.inputStream().use { fileInputStream ->
-                val encryptionMetadata = CryptoHelper.encryptFileStream(fileInputStream, dataOutputStream, secret)
+                val encryptionMetadata = CryptoHelper.encryptFileStreamWithProgress(
+                    fileInputStream,
+                    dataOutputStream,
+                    secret,
+                    file.length(),
+                    progressCallback
+                )
                 if (encryptionMetadata == null) {
                     throw Exception("Failed to encrypt file")
                 }
@@ -132,30 +160,30 @@ class FileTransferService : Service() {
             Log.d("FileTransferService", "Encrypted file sent successfully: ${file.name}")
 
             // Broadcast success with consistent action
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)
             broadcastIntent.putExtra("message", "File sent successfully")
             sendBroadcast(broadcastIntent)
 
         } catch (e: SocketTimeoutException) {
             Log.e("FileTransferService", "Connection timeout while sending file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
             sendBroadcast(broadcastIntent)
         } catch (e: IOException) {
             Log.e("FileTransferService", "Network error sending file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Network error: ${e.message}")
             sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error sending file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Failed to send file: ${e.message}")
             sendBroadcast(broadcastIntent)
@@ -178,13 +206,78 @@ class FileTransferService : Service() {
 
             Log.d("FileTransferService", "Receiving encrypted file: $fileName")
 
-            // Create output stream for the decrypted file
-            val savedFilePath = createFileForSaving(fileName, saveDirectoryUri)
-            FileOutputStream(savedFilePath).use { fileOutputStream ->
-                val success = CryptoHelper.decryptFileStream(dataInputStream, fileOutputStream, secret)
-                if (!success) {
-                    throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+            // Progress reporting callback
+            val progressCallback: (Long) -> Unit = { bytesProcessed ->
+                // Broadcast progress on main thread to avoid blocking transfer
+                launch(Dispatchers.Main) {
+                    val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
+                    progressIntent.setPackage(packageName)
+                    progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
+                    progressIntent.putExtra(EXTRA_IS_SENDING, false)
+                    sendBroadcast(progressIntent)
                 }
+            }
+
+            // Create output stream for the decrypted file - handle both selected directory and fallback
+            val savedFilePath = if (saveDirectoryUri != null) {
+                try {
+                    // Try to save to user-selected directory using DocumentFile
+                    val directory = DocumentFile.fromTreeUri(this@FileTransferService, saveDirectoryUri)
+                    if (directory != null && directory.exists()) {
+                        Log.d("FileTransferService", "Using user-selected directory via DocumentFile")
+                        val newFile = directory.createFile("*/*", fileName)
+                        if (newFile != null) {
+                            // Use ContentResolver to get OutputStream for DocumentFile
+                            contentResolver.openOutputStream(newFile.uri)?.use { fileOutputStream ->
+                                val success = CryptoHelper.decryptFileStreamWithProgress(
+                                    dataInputStream,
+                                    fileOutputStream,
+                                    secret,
+                                    progressCallback
+                                )
+                                if (!success) {
+                                    throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+                                }
+                            }
+                            newFile.uri.toString()
+                        } else {
+                            throw Exception("Failed to create file in selected directory")
+                        }
+                    } else {
+                        throw Exception("Selected directory is not accessible")
+                    }
+                } catch (e: Exception) {
+                    Log.w("FileTransferService", "Could not save to selected directory: ${e.message}, using fallback")
+                    // Fallback to app directory
+                    val fallbackPath = createFileForSaving(fileName, null)
+                    FileOutputStream(fallbackPath).use { fileOutputStream ->
+                        val success = CryptoHelper.decryptFileStreamWithProgress(
+                            dataInputStream,
+                            fileOutputStream,
+                            secret,
+                            progressCallback
+                        )
+                        if (!success) {
+                            throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+                        }
+                    }
+                    fallbackPath
+                }
+            } else {
+                // No directory selected, use app directory
+                val appPath = createFileForSaving(fileName, null)
+                FileOutputStream(appPath).use { fileOutputStream ->
+                    val success = CryptoHelper.decryptFileStreamWithProgress(
+                        dataInputStream,
+                        fileOutputStream,
+                        secret,
+                        progressCallback
+                    )
+                    if (!success) {
+                        throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+                    }
+                }
+                appPath
             }
 
             dataInputStream.close()
@@ -194,9 +287,9 @@ class FileTransferService : Service() {
             Log.d("FileTransferService", "File decrypted and saved successfully: $fileName")
             Log.d("FileTransferService", "File saved to: $savedFilePath")
 
-            // Broadcast success with file path and consistent action
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            // Broadcast success with file path
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)
             broadcastIntent.putExtra("message", "File received and decrypted successfully: $fileName")
             broadcastIntent.putExtra("file_path", savedFilePath)
@@ -204,22 +297,22 @@ class FileTransferService : Service() {
 
         } catch (e: SocketTimeoutException) {
             Log.e("FileTransferService", "Connection timeout while receiving file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
             sendBroadcast(broadcastIntent)
         } catch (e: IOException) {
             Log.e("FileTransferService", "Network error receiving file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Network error: ${e.message}")
             sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error receiving file: ${e.message}")
-            val broadcastIntent = Intent("com.skl.securefastfiletransfer.FILE_TRANSFER_COMPLETE")
-            broadcastIntent.setPackage(packageName) // Make intent explicit for security
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", false)
             broadcastIntent.putExtra("message", "Failed to receive file: ${e.message}")
             sendBroadcast(broadcastIntent)
