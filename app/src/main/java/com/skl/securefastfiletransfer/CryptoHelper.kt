@@ -227,6 +227,7 @@ object CryptoHelper {
             var bytesProcessed = 0L
             var bytesRead: Int
             val startTime = System.currentTimeMillis()
+            var lastUpdateTime = startTime
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 val encryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
@@ -235,12 +236,14 @@ object CryptoHelper {
                 }
 
                 bytesProcessed += bytesRead
+                val currentTime = System.currentTimeMillis()
 
-                // Report progress every 64KB to avoid too frequent updates
-                if (progressCallback != null && bytesProcessed % (64 * 1024) == 0L) {
-                    val elapsed = (System.currentTimeMillis() - startTime) / 1000.0f
+                // Report progress every 250ms to avoid overwhelming the UI thread
+                if (progressCallback != null && (currentTime - lastUpdateTime > 250 || bytesProcessed == fileSize)) {
+                    val elapsed = (currentTime - startTime) / 1000.0f
                     val speed = if (elapsed > 0) bytesProcessed / elapsed else 0f
                     progressCallback(bytesProcessed, fileSize, speed)
+                    lastUpdateTime = currentTime
                 }
             }
 
@@ -294,6 +297,7 @@ object CryptoHelper {
             val buffer = ByteArray(BUFFER_SIZE)
             var bytesProcessed = 0L
             var bytesRead: Int
+            var lastUpdateTime = System.currentTimeMillis()
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 val decryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
@@ -302,10 +306,12 @@ object CryptoHelper {
                 }
 
                 bytesProcessed += bytesRead
+                val currentTime = System.currentTimeMillis()
 
-                // Report progress every 64KB
-                if (progressCallback != null && bytesProcessed % (64 * 1024) == 0L) {
+                // Report progress every 250ms
+                if (progressCallback != null && (currentTime - lastUpdateTime > 250)) {
                     progressCallback(bytesProcessed)
+                    lastUpdateTime = currentTime
                 }
             }
 
