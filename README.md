@@ -1,23 +1,14 @@
-# 🔐 SecureFastFileTransfer
-## 🎥 Demo
-
-**Video demonstration showing the file transfer process between two Android devices:**
-
-<video width="100%" controls>
-  <source src="demo/2025-08-02_22-16-01.mp4" type="video/mp4">
-  <source src="demo/2025-08-02_22-16-01.webm" type="video/webm">
-  <p>Your browser does not support the video tag. Please use one of these links to view the demo:</p>
-  <ul>
-    <li><a href="demo/2025-08-02_22-16-01.mp4">📹 View Demo (MP4 format)</a></li>
-    <li><a href="demo/2025-08-02_22-16-01.webm">📹 View Demo (WebM format)</a></li>
-  </ul>
-</video>
-
-*Interactive demo showing secure file transfer between Android devices with QR code sharing*
+# 🔐 SecureFastFileTransfer  
 
 Android application for transferring files between devices on the same local network using **AES-256 encryption** with QR code-based secret sharing.
 
-![App Screenshot](demo/Screenshot_20250802-225100.png)
+## 🎥 Demo  
+
+**Video demonstration showing the file transfer process between two Android devices:**
+
+[Video demonstration showing the file transfer process between two Android devices](https://github.com/user-attachments/assets/866e1859-77c7-4974-8b6b-01abe0321eec)
+
+![App Screenshot Explaining security features and how the app works,...](demo/Screenshot_20250802-225100.png)
 
 ## 🌟 Features
 
