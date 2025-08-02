@@ -27,7 +27,9 @@ class FileTransferService : Service() {
         const val EXTRA_SECRET = "shared_secret"
         const val EXTRA_SAVE_DIRECTORY_URI = "save_directory_uri"
         private const val FILE_TRANSFER_PORT = 8989
-        private const val CONNECTION_TIMEOUT = 30000 // 30 seconds
+        // Remove all timeouts to allow unlimited time for large files
+        private const val CONNECTION_TIMEOUT = 0 // No timeout for connection
+        private const val SERVER_ACCEPT_TIMEOUT = 0 // No timeout for server accept
 
         // Progress broadcast actions
         const val ACTION_TRANSFER_PROGRESS = "com.skl.securefastfiletransfer.TRANSFER_PROGRESS"
@@ -36,6 +38,7 @@ class FileTransferService : Service() {
         const val EXTRA_TOTAL_BYTES = "total_bytes"
         const val EXTRA_TRANSFER_SPEED = "transfer_speed"
         const val EXTRA_IS_SENDING = "is_sending"
+        const val EXTRA_OPERATION_TYPE = "operation_type" // "encrypting", "transferring", "decrypting"
 
         fun startService(
             context: Context,
@@ -116,17 +119,30 @@ class FileTransferService : Service() {
                 throw Exception("File not found: $filePath")
             }
 
+            Log.d("FileTransferService", "Starting encryption of file: ${file.name}")
+
+            // Broadcast that encryption is starting
+            val encryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
+            encryptionStartIntent.setPackage(packageName)
+            encryptionStartIntent.putExtra(EXTRA_PROGRESS_BYTES, 0L)
+            encryptionStartIntent.putExtra(EXTRA_TOTAL_BYTES, file.length())
+            encryptionStartIntent.putExtra(EXTRA_TRANSFER_SPEED, 0f)
+            encryptionStartIntent.putExtra(EXTRA_IS_SENDING, true)
+            encryptionStartIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting")
+            sendBroadcast(encryptionStartIntent)
+
+            // Create connection (this should be fast)
             val socket = Socket()
-            socket.soTimeout = CONNECTION_TIMEOUT
-            socket.connect(java.net.InetSocketAddress(hostAddress, FILE_TRANSFER_PORT), CONNECTION_TIMEOUT)
-            
+            socket.connect(java.net.InetSocketAddress(hostAddress, FILE_TRANSFER_PORT))
+            socket.soTimeout = 0 // No timeout during data operations
+
             val outputStream = socket.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
             // Send file name first
             dataOutputStream.writeUTF(file.name)
 
-            // Progress reporting callback
+            // Enhanced progress reporting callback with encryption phase tracking
             val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
                 // Broadcast progress on main thread to avoid blocking transfer
                 launch(Dispatchers.Main) {
@@ -136,6 +152,8 @@ class FileTransferService : Service() {
                     progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
                     progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
                     progressIntent.putExtra(EXTRA_IS_SENDING, true)
+                    // The crypto helper handles both encryption and transfer, so this is the combined operation
+                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting_and_sending")
                     sendBroadcast(progressIntent)
                 }
             }
@@ -166,20 +184,6 @@ class FileTransferService : Service() {
             broadcastIntent.putExtra("message", "File sent successfully")
             sendBroadcast(broadcastIntent)
 
-        } catch (e: SocketTimeoutException) {
-            Log.e("FileTransferService", "Connection timeout while sending file: ${e.message}")
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", false)
-            broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
-            sendBroadcast(broadcastIntent)
-        } catch (e: IOException) {
-            Log.e("FileTransferService", "Network error sending file: ${e.message}")
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", false)
-            broadcastIntent.putExtra("message", "Network error: ${e.message}")
-            sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error sending file: ${e.message}")
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
@@ -193,11 +197,21 @@ class FileTransferService : Service() {
     private suspend fun receiveFile(secret: String, saveDirectoryUri: Uri?) = withContext(Dispatchers.IO) {
         try {
             serverSocket = ServerSocket(FILE_TRANSFER_PORT)
-            serverSocket?.soTimeout = CONNECTION_TIMEOUT
+            serverSocket?.soTimeout = 0 // No timeout - wait indefinitely for connection
             Log.d("FileTransferService", "Waiting for encrypted file transfer...")
 
+            // Broadcast that we're waiting for connection
+            val waitingIntent = Intent(ACTION_TRANSFER_PROGRESS)
+            waitingIntent.setPackage(packageName)
+            waitingIntent.putExtra(EXTRA_PROGRESS_BYTES, 0L)
+            waitingIntent.putExtra(EXTRA_TOTAL_BYTES, 0L)
+            waitingIntent.putExtra(EXTRA_TRANSFER_SPEED, 0f)
+            waitingIntent.putExtra(EXTRA_IS_SENDING, false)
+            waitingIntent.putExtra(EXTRA_OPERATION_TYPE, "waiting_for_connection")
+            sendBroadcast(waitingIntent)
+
             val socket = serverSocket?.accept()
-            socket?.soTimeout = CONNECTION_TIMEOUT
+            socket?.soTimeout = 0 // No timeout during data operations
             val inputStream = socket?.getInputStream()
             val dataInputStream = DataInputStream(inputStream)
 
@@ -205,6 +219,16 @@ class FileTransferService : Service() {
             val fileName = dataInputStream.readUTF()
 
             Log.d("FileTransferService", "Receiving encrypted file: $fileName")
+
+            // Broadcast that decryption is starting
+            val decryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
+            decryptionStartIntent.setPackage(packageName)
+            decryptionStartIntent.putExtra(EXTRA_PROGRESS_BYTES, 0L)
+            decryptionStartIntent.putExtra(EXTRA_TOTAL_BYTES, 0L) // We don't know total size yet
+            decryptionStartIntent.putExtra(EXTRA_TRANSFER_SPEED, 0f)
+            decryptionStartIntent.putExtra(EXTRA_IS_SENDING, false)
+            decryptionStartIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
+            sendBroadcast(decryptionStartIntent)
 
             // Progress reporting callback
             val progressCallback: (Long) -> Unit = { bytesProcessed ->
@@ -214,6 +238,7 @@ class FileTransferService : Service() {
                     progressIntent.setPackage(packageName)
                     progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
                     progressIntent.putExtra(EXTRA_IS_SENDING, false)
+                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
                     sendBroadcast(progressIntent)
                 }
             }
@@ -295,20 +320,6 @@ class FileTransferService : Service() {
             broadcastIntent.putExtra("file_path", savedFilePath)
             sendBroadcast(broadcastIntent)
 
-        } catch (e: SocketTimeoutException) {
-            Log.e("FileTransferService", "Connection timeout while receiving file: ${e.message}")
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", false)
-            broadcastIntent.putExtra("message", "Connection timeout: ${e.message}")
-            sendBroadcast(broadcastIntent)
-        } catch (e: IOException) {
-            Log.e("FileTransferService", "Network error receiving file: ${e.message}")
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", false)
-            broadcastIntent.putExtra("message", "Network error: ${e.message}")
-            sendBroadcast(broadcastIntent)
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error receiving file: ${e.message}")
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)

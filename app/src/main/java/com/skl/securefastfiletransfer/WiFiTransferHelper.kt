@@ -20,7 +20,6 @@ class WiFiTransferHelper(private val context: Context) {
     private var transferListener: TransferListener? = null
     private var discoverySocket: DatagramSocket? = null
     private var secretServerSocket: ServerSocket? = null
-    private var fileServerSocket: ServerSocket? = null
     private var currentSecret: String? = null
     private val executor = Executors.newCachedThreadPool()
     private var isRunning = false
@@ -29,7 +28,6 @@ class WiFiTransferHelper(private val context: Context) {
     companion object {
         private const val DISCOVERY_PORT = 8987
         private const val SECRET_VERIFICATION_PORT = 8988
-        private const val FILE_TRANSFER_PORT = 8989
         private const val BROADCAST_MESSAGE = "NFConnect_Discovery"
     }
 
@@ -353,7 +351,6 @@ class WiFiTransferHelper(private val context: Context) {
         try {
             discoverySocket?.close()
             secretServerSocket?.close()
-            fileServerSocket?.close()
         } catch (e: Exception) {
             Log.w("WiFiTransferHelper", "Error during cleanup: ${e.message}")
         }
