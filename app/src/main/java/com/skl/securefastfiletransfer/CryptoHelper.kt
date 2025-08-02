@@ -2,7 +2,6 @@ package com.skl.securefastfiletransfer
 
 import android.util.Base64
 import android.util.Log
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Arrays
 import javax.crypto.Cipher
@@ -17,7 +16,7 @@ object CryptoHelper {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val IV_SIZE = 12 // 96 bits for GCM
     private const val TAG_SIZE = 16 // 128 bits authentication tag
-    private const val PBKDF2_ITERATIONS = 100000
+    private const val PBKDF2_ITERATIONS = 310000 // OWASP 2023 recommendation for PBKDF2-SHA256
     private const val SALT_SIZE = 16
     private const val MIN_SECRET_LENGTH = 8
 
@@ -25,6 +24,12 @@ object CryptoHelper {
         val salt = ByteArray(SALT_SIZE)
         SecureRandom().nextBytes(salt)
         return salt
+    }
+
+    private fun generateIV(): ByteArray {
+        val iv = ByteArray(IV_SIZE)
+        SecureRandom().nextBytes(iv)
+        return iv
     }
 
     fun generateKeyFromSecret(secret: String, salt: ByteArray = generateSalt()): Pair<SecretKeySpec, ByteArray> {
@@ -38,7 +43,11 @@ object CryptoHelper {
             // Clear sensitive data
             spec.clearPassword()
             
-            Pair(SecretKeySpec(keyBytes, ALGORITHM), salt)
+            val secretKey = SecretKeySpec(keyBytes, ALGORITHM)
+            // Clear key bytes from memory
+            Arrays.fill(keyBytes, 0.toByte())
+            
+            Pair(secretKey, salt)
         } finally {
             // Ensure cleanup even if exception occurs
             Arrays.fill(secretChars, ' ')
@@ -61,8 +70,7 @@ object CryptoHelper {
             val cipher = Cipher.getInstance(TRANSFORMATION)
 
             // Generate random IV (nonce) for GCM
-            val iv = ByteArray(IV_SIZE)
-            SecureRandom().nextBytes(iv)
+            val iv = generateIV()
             val gcmSpec = GCMParameterSpec(TAG_SIZE * 8, iv) // Tag size in bits
 
             cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec)
