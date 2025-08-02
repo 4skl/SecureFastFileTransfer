@@ -143,6 +143,7 @@ class FileTransferService : Service() {
             dataOutputStream.writeUTF(file.name)
 
             // Enhanced progress reporting callback with encryption phase tracking
+            var encryptionStarted = false
             val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
                 // Broadcast progress on main thread to avoid blocking transfer
                 launch(Dispatchers.Main) {
@@ -152,8 +153,15 @@ class FileTransferService : Service() {
                     progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
                     progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
                     progressIntent.putExtra(EXTRA_IS_SENDING, true)
-                    // The crypto helper handles both encryption and transfer, so this is the combined operation
-                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting_and_sending")
+
+                    // Show encryption progress for the first part, then encryption+sending
+                    val operationType = if (!encryptionStarted && bytesProcessed < totalBytes * 0.1) {
+                        "encrypting"
+                    } else {
+                        encryptionStarted = true
+                        "encrypting_and_sending"
+                    }
+                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, operationType)
                     sendBroadcast(progressIntent)
                 }
             }
