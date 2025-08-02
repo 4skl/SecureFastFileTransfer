@@ -1,4 +1,4 @@
-# !!!! Should work but not reviewed yet !!!!
+# !!!! Should work but not reviewed yet; this is a prototype !!!!
 
 # 🔐 SecureFastFileTransfer  
 
