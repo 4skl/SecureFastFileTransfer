@@ -66,6 +66,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private lateinit var wifiTransferHelper: WiFiTransferHelper
@@ -722,90 +727,63 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         // Show received file dialog
         if (showFileReceivedDialog) {
             AlertDialog(
-                onDismissRequest = {
-                    showFileReceivedDialog = false
-                },
-                title = {
-                    Text(
-                        "🎉 File Received Successfully!",
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                },
+                onDismissRequest = { showFileReceivedDialog = false },
+                title = { Text("✅ File Received Successfully") },
                 text = {
                     Column {
-                        Text(
-                            text = "The file has been received and decrypted successfully.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text(
-                            text = "📁 Saved to:",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        // Clickable file path with folder icon
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .clickable {
-                                        openFileLocation(receivedFilePath)
-                                    }
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.FolderOpen,
-                                    contentDescription = "Open folder",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = receivedFilePath,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        textDecoration = TextDecoration.Underline
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
-
+                        Text("The file has been saved to your device.")
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "📁 Tap the path above to open the file location",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
+                            text = receivedFilePath,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 },
                 confirmButton = {
-                    Button(onClick = {
-                        showFileReceivedDialog = false
-                    }) { Text("✅ OK") }
+                    TextButton(
+                        onClick = {
+                            showFileReceivedDialog = false
+                            // Open the directory where the file was saved
+                            try {
+                                val fileUri = Uri.parse(receivedFilePath)
+                                val intent = if ("file" == fileUri.scheme) {
+                                    // It's a regular file path
+                                    val file = File(fileUri.path!!)
+                                    val directory = file.parentFile
+                                    Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(
+                                            Uri.parse(directory?.absolutePath),
+                                            "*/*"
+                                        )
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                } else {
+                                    // It's a content URI from DocumentFile
+                                    Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(fileUri, "*/*")
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    }
+                                }
+                                startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(this@MainActivity, "Could not open file location: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = "Open location")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Open Location")
+                        }
+                    }
                 },
                 dismissButton = {
-                    TextButton(onClick = {
-                        showFileReceivedDialog = false
-                        openFileLocation(receivedFilePath)
-                    }) { Text("📁 Open Location") }
+                    TextButton(onClick = { showFileReceivedDialog = false }) {
+                        Text("Dismiss")
+                    }
                 }
             )
-        }
-
-        // Rest of dialogs (permissions, about)...
-        if (waitingForSecret && !hasRequiredPermissions()) {
-            LaunchedEffect(Unit) {
-                showPermissionDialog = true
-            }
         }
 
         if (showPermissionDialog) {
@@ -1019,23 +997,27 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 return
             }
 
-            val filePath = copyUriToCache(selectedFileUri!!)
-            if (filePath == null) {
-                status = "Failed to prepare file for transfer"
-                return
+            // Launch coroutine to copy file without blocking UI
+            lifecycleScope.launch {
+                status = "Preparing file for transfer..."
+                val filePath = copyUriToCache(selectedFileUri!!)
+                if (filePath == null) {
+                    status = "Failed to prepare file for transfer"
+                    return@launch
+                }
+
+                status = "Starting encrypted file transfer..."
+                isTransferInProgress = true
+
+                // Use FileTransferService instead of WiFiTransferHelper for file transfer
+                FileTransferService.startService(
+                    context = this@MainActivity,
+                    action = FileTransferService.ACTION_SEND_FILE,
+                    filePath = filePath,
+                    hostAddress = peerIpAddress!!,
+                    secret = handshakeSecret!!
+                )
             }
-
-            status = "Starting encrypted file transfer..."
-            isTransferInProgress = true
-
-            // Use FileTransferService instead of WiFiTransferHelper for file transfer
-            FileTransferService.startService(
-                context = this,
-                action = FileTransferService.ACTION_SEND_FILE,
-                filePath = filePath,
-                hostAddress = peerIpAddress!!,
-                secret = handshakeSecret!!
-            )
         } else {
             status = "Ready to receive encrypted file..."
             isTransferInProgress = true
@@ -1050,9 +1032,9 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         }
     }
 
-    private fun copyUriToCache(uri: Uri): String? {
-        return try {
-            val fileName = getFileNameFromUri(this, uri) ?: "tempfile"
+    private suspend fun copyUriToCache(uri: Uri): String? = withContext(Dispatchers.IO) {
+        return@withContext try {
+            val fileName = getFileNameFromUri(this@MainActivity, uri) ?: "tempfile"
             val file = File(cacheDir, fileName)
             contentResolver.openInputStream(uri)?.use { input ->
                 java.io.FileOutputStream(file).use { output ->
