@@ -116,7 +116,9 @@ class FileTransferService : Service() {
                 throw Exception("File not found: $filePath")
             }
 
-            Log.d("FileTransferService", "Starting encryption of file: ${file.name}")
+            // Get the actual filename from the file path
+            val actualFileName = file.name
+            Log.d("FileTransferService", "Starting encryption of file: $actualFileName")
 
             // Broadcast that encryption is starting
             val encryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -160,14 +162,14 @@ class FileTransferService : Service() {
                 }
             }
 
-            // Encrypt and send the file using streaming with progress
+            // Encrypt and send the file using streaming with progress - PASS THE ACTUAL FILENAME
             file.inputStream().use { fileInputStream ->
                 val encryptionMetadata = CryptoHelper.encryptFileStreamWithProgress(
                     fileInputStream,
                     dataOutputStream,
                     secret,
                     file.length(),
-                    file.name,
+                    actualFileName, // Use the actual filename instead of generic "file.name"
                     progressCallback
                 )
                 if (encryptionMetadata == null) {
@@ -178,7 +180,7 @@ class FileTransferService : Service() {
             dataOutputStream.close()
             socket.close()
 
-            Log.d("FileTransferService", "Encrypted file sent successfully: ${file.name}")
+            Log.d("FileTransferService", "Encrypted file sent successfully: $actualFileName")
 
             // Broadcast success with consistent action
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
@@ -230,19 +232,43 @@ class FileTransferService : Service() {
             decryptionStartIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
             sendBroadcast(decryptionStartIntent)
 
-            // Progress reporting callback
+            // Track for real-time progress updates
+            var lastProgressUpdate = System.currentTimeMillis()
+            var receivedFileName: String? = null
+            var totalFileSize: Long = 0L
+
+            // Enhanced progress reporting callback with real-time updates
             val progressCallback: (Long, String?, Long?) -> Unit = { bytesProcessed, fileName, fileSize ->
-                // Broadcast progress on main thread to avoid blocking transfer
-                launch(Dispatchers.Main) {
-                    val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
-                    progressIntent.setPackage(packageName)
-                    progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
-                    if (fileSize != null && fileSize > 0) {
-                        progressIntent.putExtra(EXTRA_TOTAL_BYTES, fileSize)
+                val currentTime = System.currentTimeMillis()
+
+                // Update filename and file size when first available
+                if (fileName != null && receivedFileName == null) {
+                    receivedFileName = fileName
+                    Log.d("FileTransferService", "Receiving file: $fileName")
+                }
+                if (fileSize != null && fileSize > 0 && totalFileSize == 0L) {
+                    totalFileSize = fileSize
+                    Log.d("FileTransferService", "File size: $fileSize bytes")
+                }
+
+                // Broadcast progress updates more frequently for real-time feedback
+                if (currentTime - lastProgressUpdate > 100) { // Update every 100ms for smoother progress
+                    launch(Dispatchers.Main) {
+                        val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
+                        progressIntent.setPackage(packageName)
+                        progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
+                        if (totalFileSize > 0) {
+                            progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalFileSize)
+                        }
+                        // Calculate speed based on time elapsed
+                        val elapsedSeconds = (currentTime - lastProgressUpdate) / 1000f
+                        val speed = if (elapsedSeconds > 0) bytesProcessed / elapsedSeconds else 0f
+                        progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
+                        progressIntent.putExtra(EXTRA_IS_SENDING, false)
+                        progressIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
+                        sendBroadcast(progressIntent)
                     }
-                    progressIntent.putExtra(EXTRA_IS_SENDING, false)
-                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
-                    sendBroadcast(progressIntent)
+                    lastProgressUpdate = currentTime
                 }
             }
 
@@ -253,7 +279,8 @@ class FileTransferService : Service() {
                     val directory = DocumentFile.fromTreeUri(this@FileTransferService, saveDirectoryUri)
                     if (directory != null && directory.exists()) {
                         Log.d("FileTransferService", "Using user-selected directory via DocumentFile")
-                        val newFile = directory.createFile("*/*", "received_file")
+                        // We'll determine the filename during decryption, so use a temporary name for now
+                        val newFile = directory.createFile("*/*", "received_file_temp")
                         if (newFile != null) {
                             // Use ContentResolver to get OutputStream for DocumentFile
                             contentResolver.openOutputStream(newFile.uri)?.use { fileOutputStream ->
@@ -267,7 +294,31 @@ class FileTransferService : Service() {
                                     throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                                 }
                             }
-                            newFile.uri.toString()
+
+                            // Try to rename the file to the actual filename if we got it
+                            if (receivedFileName != null && receivedFileName != "received_file_temp") {
+                                try {
+                                    val finalFile = directory.createFile("*/*", receivedFileName!!)
+                                    if (finalFile != null) {
+                                        // Copy content from temp file to final file
+                                        contentResolver.openInputStream(newFile.uri)?.use { tempInput ->
+                                            contentResolver.openOutputStream(finalFile.uri)?.use { finalOutput ->
+                                                tempInput.copyTo(finalOutput)
+                                            }
+                                        }
+                                        // Delete temp file
+                                        newFile.delete()
+                                        finalFile.uri.toString()
+                                    } else {
+                                        newFile.uri.toString()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w("FileTransferService", "Could not rename to actual filename: ${e.message}")
+                                    newFile.uri.toString()
+                                }
+                            } else {
+                                newFile.uri.toString()
+                            }
                         } else {
                             throw Exception("Failed to create file in selected directory")
                         }
@@ -276,8 +327,9 @@ class FileTransferService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.w("FileTransferService", "Could not save to selected directory: ${e.message}, using fallback")
-                    // Fallback to app directory
-                    val fallbackPath = createFileForSaving("received_file", null)
+                    // Fallback to app directory with proper filename
+                    val fileName = receivedFileName ?: "received_file"
+                    val fallbackPath = createFileForSaving(fileName, null)
                     File(fallbackPath).outputStream().use { fileOutputStream ->
                         val success = CryptoHelper.decryptFileStreamWithProgress(
                             dataInputStream,
@@ -292,8 +344,9 @@ class FileTransferService : Service() {
                     fallbackPath
                 }
             } else {
-                // No directory selected, use app directory
-                val appPath = createFileForSaving("received_file", null)
+                // No directory selected, use app directory with proper filename
+                val fileName = receivedFileName ?: "received_file"
+                val appPath = createFileForSaving(fileName, null)
                 File(appPath).outputStream().use { fileOutputStream ->
                     val success = CryptoHelper.decryptFileStreamWithProgress(
                         dataInputStream,
@@ -314,13 +367,15 @@ class FileTransferService : Service() {
 
             Log.d("FileTransferService", "File decrypted and saved successfully")
             Log.d("FileTransferService", "File saved to: $savedFilePath")
+            Log.d("FileTransferService", "Original filename: ${receivedFileName ?: "unknown"}")
 
-            // Broadcast success with file path
+            // Broadcast success with file path and filename
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)
             broadcastIntent.putExtra("message", "File received and decrypted successfully")
             broadcastIntent.putExtra("file_path", savedFilePath)
+            broadcastIntent.putExtra("file_name", receivedFileName ?: "received_file")
             sendBroadcast(broadcastIntent)
 
         } catch (e: Exception) {

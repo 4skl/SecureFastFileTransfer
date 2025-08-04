@@ -150,34 +150,35 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     val totalBytes = intent.getLongExtra(FileTransferService.EXTRA_TOTAL_BYTES, 0)
                     val speed = intent.getFloatExtra(FileTransferService.EXTRA_TRANSFER_SPEED, 0f)
                     val isSending = intent.getBooleanExtra(FileTransferService.EXTRA_IS_SENDING, false)
+                    val operationType = intent.getStringExtra(FileTransferService.EXTRA_OPERATION_TYPE) ?: ""
 
-                    runOnUiThread {
-                        isTransferInProgress = true
-                        this@MainActivity.bytesTransferred = bytesProcessed
-                        this@MainActivity.totalBytes = totalBytes
-                        this@MainActivity.transferSpeed = speed / 1024f // Convert to KB/s
+                    // Update progress state variables for real-time UI updates
+                    isTransferInProgress = true
+                    this@MainActivity.bytesTransferred = bytesProcessed
+                    this@MainActivity.totalBytes = totalBytes
+                    this@MainActivity.transferSpeed = speed
 
-                        if (totalBytes > 0) {
-                            transferProgress = (bytesProcessed.toFloat() / totalBytes.toFloat()) * 100f
-                            val progressPercent = transferProgress.toInt()
-                            val speedText = if (speed > 0) {
-                                val speedKB = speed / 1024f
-                                if (speedKB > 1024) {
-                                    String.format("%.1f MB/s", speedKB / 1024f)
-                                } else {
-                                    String.format("%.1f KB/s", speedKB)
-                                }
-                            } else "Calculating..."
+                    // Calculate progress percentage
+                    transferProgress = if (totalBytes > 0) {
+                        (bytesProcessed.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
 
-                            status = if (isSending) {
-                                "📤 Sending: $progressPercent% ($speedText)"
-                            } else {
-                                "📥 Receiving: $progressPercent% ($speedText)"
-                            }
+                    // Update status based on operation type and role
+                    status = when (operationType) {
+                        "encrypting" -> "🔐 Encrypting file... ${(transferProgress * 100).toInt()}%"
+                        "encrypting_and_sending" -> "📤 Encrypting and sending... ${(transferProgress * 100).toInt()}%"
+                        "waiting_for_connection" -> "⏳ Waiting for sender connection..."
+                        "receiving_and_decrypting" -> if (totalBytes > 0) {
+                            "📥 Receiving and decrypting... ${(transferProgress * 100).toInt()}%"
                         } else {
+                            "📥 Receiving and decrypting..."
+                        }
+                        else -> {
                             // For receiver without total size
                             val processedMB = bytesProcessed / (1024f * 1024f)
-                            status = "📥 Receiving: ${String.format("%.1f MB", processedMB)} received"
+                            "📥 Receiving: ${String.format("%.1f MB", processedMB)} received"
                         }
                     }
                 }
@@ -217,14 +218,16 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         if (uri != null) {
             selectedFileUri = uri
             val fileName = getFileNameFromUri(this, uri)
-            // Use the secure secret generation from QRCodeHelper
+            // Generate a NEW secret each time a file is selected for enhanced security
             val generatedSecret = QRCodeHelper.generateSecureSecret()
             handshakeSecret = generatedSecret
             status = "File selected: $fileName. Share the QR code or secret with receiver."
 
-            // Generate QR code
+            // Generate QR code with the new secret
             qrCodeBitmap = QRCodeHelper.generateQRCode(generatedSecret, 400)
             showQRCode = true
+
+            Log.d("MainActivity", "Generated new secret for file: $fileName")
         }
     }
 
