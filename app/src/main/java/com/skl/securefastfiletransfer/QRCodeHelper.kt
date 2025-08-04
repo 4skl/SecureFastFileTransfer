@@ -150,6 +150,13 @@ object QRCodeHelper {
     /**
      * Clean and sanitize secret input from user or QR code
      */
+    fun sanitizeScannedText(input: String?): String? {
+        return sanitizeSecretInput(input)
+    }
+
+    /**
+     * Clean and sanitize secret input from user or QR code
+     */
     private fun sanitizeSecretInput(input: String?): String? {
         if (input.isNullOrBlank()) {
             Log.w(TAG, "Empty secret input")

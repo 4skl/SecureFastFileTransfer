@@ -130,8 +130,9 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     // QR Code scanner launcher
     private val qrScannerLauncher = registerForActivityResult(ScanContract()) { result ->
         if (result.contents != null) {
-            // Sanitize and validate the scanned text
-            val sanitizedSecret = QRCodeHelper.sanitizeScannedText(result.contents)
+            // Sanitize and validate the scanned text - ensure we convert to String
+            val scannedText = result.contents.toString()
+            val sanitizedSecret = QRCodeHelper.sanitizeScannedText(scannedText)
             if (sanitizedSecret != null && QRCodeHelper.isValidSecret(sanitizedSecret)) {
                 handshakeSecret = sanitizedSecret
                 status = "Secret scanned! Connecting to sender..."
