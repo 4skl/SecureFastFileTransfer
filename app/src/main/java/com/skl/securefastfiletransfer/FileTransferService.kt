@@ -173,6 +173,7 @@ class FileTransferService : Service() {
                     dataOutputStream,
                     secret,
                     file.length(),
+                    file.name,
                     progressCallback
                 )
                 if (encryptionMetadata == null) {
@@ -239,7 +240,7 @@ class FileTransferService : Service() {
             sendBroadcast(decryptionStartIntent)
 
             // Progress reporting callback
-            val progressCallback: (Long) -> Unit = { bytesProcessed ->
+            val progressCallback: (Long, String?, Long?) -> Unit = { bytesProcessed, fileName, fileSize ->
                 // Broadcast progress on main thread to avoid blocking transfer
                 launch(Dispatchers.Main) {
                     val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -247,6 +248,8 @@ class FileTransferService : Service() {
                     progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
                     progressIntent.putExtra(EXTRA_IS_SENDING, false)
                     progressIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
+                    // Add total bytes if available
+                    fileSize?.let { progressIntent.putExtra(EXTRA_TOTAL_BYTES, it) }
                     sendBroadcast(progressIntent)
                 }
             }
