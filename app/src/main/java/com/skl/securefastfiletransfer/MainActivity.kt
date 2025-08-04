@@ -696,15 +696,16 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 confirmButton = {
                     Button(onClick = {
                         // Verify and proceed with manual secret
-                        if (manualSecretInput.length >= 30) { // UUID length
-                            handshakeSecret = manualSecretInput
+                        val sanitizedSecret = QRCodeHelper.sanitizeScannedText(manualSecretInput)
+                        if (sanitizedSecret != null && QRCodeHelper.isValidSecret(sanitizedSecret)) {
+                            handshakeSecret = sanitizedSecret
                             status = "Secret received! Connecting to sender..."
                             showManualSecretDialog = false
                             waitingForSecret = false
                             manualSecretInput = "" // Clear the input
                             startWifiTransfer()
                         } else {
-                            Toast.makeText(this@MainActivity, "Please enter the complete secret code (should be around 36 characters)", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "Invalid secret! Please enter exactly 64 hexadecimal characters (256-bit key)", Toast.LENGTH_LONG).show()
                         }
                     }) { Text("✅ Confirm Secret") }
                 },

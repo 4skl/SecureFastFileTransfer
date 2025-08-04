@@ -15,7 +15,6 @@ object CryptoHelper {
     private const val HMAC_ALGORITHM = "HmacSHA256"
     private const val IV_SIZE = 16 // 128 bits for CTR mode
     private const val HMAC_SIZE = 32 // 256 bits for SHA256
-    private const val PBKDF2_ITERATIONS = 310000 // OWASP 2023 recommendation for PBKDF2-SHA256
     private const val SALT_SIZE = 16
     private const val MIN_SECRET_LENGTH = 64 // Enforce exactly 64 hex characters (256-bit keys only)
     private const val BUFFER_SIZE = 8 * 1024 * 1024 // 8MB chunks for streaming
@@ -430,3 +429,4 @@ object CryptoHelper {
         }
     }
 }
+
