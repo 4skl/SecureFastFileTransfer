@@ -7,8 +7,6 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
-import java.security.SecureRandom
-import javax.crypto.spec.SecretKeySpec
 
 object QRCodeHelper {
 
@@ -94,33 +92,6 @@ object QRCodeHelper {
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error during secret validation", e)
             false
-        }
-    }
-
-    /**
-     * Generate a cryptographically secure 256-bit hex key for use as handshake secret
-     */
-    fun generateSecureSecret(): String {
-        return try {
-            // Use SecureRandom for cryptographically strong random key
-            val secureRandom = SecureRandom()
-            val keyBytes = ByteArray(32) // 256 bits = 32 bytes
-            secureRandom.nextBytes(keyBytes)
-
-            // Convert to hex string
-            val hexKey = keyBytes.joinToString("") { byte ->
-                "%02x".format(byte)
-            }
-
-            Log.d(TAG, "Generated secure 256-bit hex key with strong entropy")
-            hexKey
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to generate secure secret", e)
-            // Fallback - should never happen but better safe than sorry
-            val fallbackRandom = SecureRandom()
-            val fallbackBytes = ByteArray(32)
-            fallbackRandom.nextBytes(fallbackBytes)
-            fallbackBytes.joinToString("") { "%02x".format(it) }
         }
     }
 
@@ -251,27 +222,5 @@ object QRCodeHelper {
         }
 
         return false
-    }
-
-    /**
-     * Generate a cryptographically secure key for AES encryption from the hex secret
-     */
-    fun deriveEncryptionKey(secret: String): SecretKeySpec? {
-        return try {
-            if (!isValidSecret(secret)) {
-                Log.e(TAG, "Cannot derive encryption key from invalid secret")
-                return null
-            }
-
-            // Convert hex string to bytes (already validated as 64 hex chars = 32 bytes)
-            val keyBytes = secret.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-            val keySpec = SecretKeySpec(keyBytes, "AES") // 256-bit key
-
-            Log.d(TAG, "Successfully derived encryption key from hex secret")
-            keySpec
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to derive encryption key", e)
-            null
-        }
     }
 }

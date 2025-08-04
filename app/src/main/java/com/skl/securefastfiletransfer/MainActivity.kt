@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -240,7 +241,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             isSender = true
 
             // Generate a NEW secret each time a file is selected for enhanced security
-            val generatedSecret = QRCodeHelper.generateSecureSecret()
+            val generatedSecret = CryptoHelper.generateSecureSecret()
             handshakeSecret = generatedSecret
 
             // Generate QR code with the new secret
@@ -277,6 +278,26 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         setContent {
             MainContent()
         }
+
+        // Handle back button presses
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // If dialogs are open, close them first
+                if (showConfirmDialog || showQRCode || showManualSecretDialog || showFileReceivedDialog || showPermissionDialog || showAboutDialog) {
+                    // Close all dialogs
+                    showConfirmDialog = false
+                    showQRCode = false
+                    showManualSecretDialog = false
+                    showFileReceivedDialog = false
+                    showPermissionDialog = false
+                    showAboutDialog = false
+                } else {
+                    // If no dialogs are open, allow the default back press behavior
+                    isEnabled = false
+                    onBackPressed()
+                }
+            }
+        })
     }
 
     @Composable
@@ -475,7 +496,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                         Button(
                                             onClick = {
                                                 // Generate a new secret
-                                                val newSecret = QRCodeHelper.generateSecureSecret()
+                                                val newSecret = CryptoHelper.generateSecureSecret()
                                                 handshakeSecret = newSecret
                                                 qrCodeBitmap = QRCodeHelper.generateQRCode(newSecret, 400)
                                                 Toast.makeText(this@MainActivity, "New secret generated!", Toast.LENGTH_SHORT).show()

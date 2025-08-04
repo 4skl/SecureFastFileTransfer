@@ -170,100 +170,7 @@ object CryptoHelper {
         }
     }
 
-    // Enhanced streaming encryption with encrypted filename and HMAC authentication
-    fun encryptFileStreamWithProgress(
-        inputStream: InputStream,
-        outputStream: OutputStream,
-        secret: String,
-        fileSize: Long,
-        fileName: String = "file",
-        progressCallback: ((bytesProcessed: Long, totalBytes: Long, speed: Float) -> Unit)? = null
-    ): EncryptionMetadata? {
-        return try {
-            if (secret.length < MIN_SECRET_LENGTH) {
-                Log.w("CryptoHelper", "Secret is too short, should be at least $MIN_SECRET_LENGTH characters")
-                return null
-            }
-
-            val salt = generateSalt()
-            val iv = generateUniqueIV()
-            val (encryptionKey, hmacKey) = deriveKeys(secret, salt)
-
-            // Write salt and IV first
-            outputStream.write(salt)
-            outputStream.write(iv)
-
-            // Initialize HMAC for authentication
-            val mac = javax.crypto.Mac.getInstance(HMAC_ALGORITHM)
-            mac.init(hmacKey)
-
-            // Authenticate salt and IV
-            mac.update(salt)
-            mac.update(iv)
-
-            // Use AES-CTR mode for streaming
-            val ctrCipher = Cipher.getInstance(TRANSFORMATION_CTR)
-            val ctrSpec = IvParameterSpec(iv)
-            ctrCipher.init(Cipher.ENCRYPT_MODE, encryptionKey, ctrSpec)
-
-            // Create and encrypt file header first
-            val fileHeader = createFileHeader(fileName, fileSize)
-            val encryptedHeader = ctrCipher.update(fileHeader)
-            outputStream.write(encryptedHeader)
-            mac.update(encryptedHeader) // Authenticate encrypted header
-
-            val buffer = ByteArray(BUFFER_SIZE)
-            var bytesProcessed = 0L
-            var bytesRead: Int
-            val startTime = System.currentTimeMillis()
-            var lastUpdateTime = startTime
-            val totalBytesWithHeader = fileSize + fileHeader.size
-
-            // TRUE STREAMING: Read chunk by chunk and immediately encrypt and send
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                // Encrypt this chunk immediately
-                val encryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
-                if (encryptedChunk != null) {
-                    // Send immediately to network
-                    outputStream.write(encryptedChunk)
-                    outputStream.flush() // Force immediate sending
-                    mac.update(encryptedChunk) // Authenticate each chunk
-                }
-
-                bytesProcessed += bytesRead
-                val currentTime = System.currentTimeMillis()
-
-                // Report progress every 250ms to avoid overwhelming the UI thread
-                if (progressCallback != null && (currentTime - lastUpdateTime > 250 || bytesProcessed == fileSize)) {
-                    val elapsed = (currentTime - startTime) / 1000.0f
-                    val speed = if (elapsed > 0) (bytesProcessed + fileHeader.size) / elapsed else 0f
-                    progressCallback(bytesProcessed + fileHeader.size, totalBytesWithHeader, speed)
-                    lastUpdateTime = currentTime
-                }
-            }
-
-            // Finalize encryption
-            val finalChunk = ctrCipher.doFinal()
-            if (finalChunk != null && finalChunk.isNotEmpty()) {
-                outputStream.write(finalChunk)
-                outputStream.flush()
-                mac.update(finalChunk) // Authenticate final chunk
-            }
-
-            // Write HMAC at the end for authentication
-            val hmacBytes = mac.doFinal()
-            outputStream.write(hmacBytes)
-            outputStream.flush()
-
-            Log.d("CryptoHelper", "File encrypted successfully with streaming AES-CTR+HMAC. Processed $bytesProcessed bytes")
-            EncryptionMetadata(iv, salt)
-        } catch (e: Exception) {
-            Log.e("CryptoHelper", "Streaming AES-CTR+HMAC encryption failed: ${e.message}")
-            null
-        }
-    }
-
-    // TRUE STREAMING DECRYPTION - no temp files, process chunk by chunk
+    // TRUE STREAMING DECRYPTION - process 8MB chunks immediately
     fun decryptFileStreamWithProgress(
         inputStream: InputStream,
         outputStream: OutputStream,
@@ -295,14 +202,13 @@ object CryptoHelper {
             val ctrSpec = IvParameterSpec(iv)
             ctrCipher.init(Cipher.DECRYPT_MODE, encryptionKey, ctrSpec)
 
-            // Read and decrypt the file header first (8MB)
-            val encryptedHeaderSize = BUFFER_SIZE
-            val encryptedHeader = ByteArray(encryptedHeaderSize)
+            // Read and decrypt the file header first (8MB block)
+            val encryptedHeader = ByteArray(BUFFER_SIZE)
             var headerBytesRead = 0
 
             // Read header completely
-            while (headerBytesRead < encryptedHeaderSize) {
-                val read = inputStream.read(encryptedHeader, headerBytesRead, encryptedHeaderSize - headerBytesRead)
+            while (headerBytesRead < BUFFER_SIZE) {
+                val read = inputStream.read(encryptedHeader, headerBytesRead, BUFFER_SIZE - headerBytesRead)
                 if (read == -1) {
                     Log.e("CryptoHelper", "Unexpected end of stream while reading header")
                     return false
@@ -320,121 +226,220 @@ object CryptoHelper {
             // Report initial progress with filename
             progressCallback?.invoke(0L, fileName, fileSize)
 
-            // Now stream the actual file data chunk by chunk
-            val buffer = ByteArray(BUFFER_SIZE)
-            var totalBytesProcessed = headerBytesRead.toLong()
+            // Stream the actual file data in 8MB chunks
+            val buffer = ByteArray(BUFFER_SIZE) // 8MB chunks
             var fileBytesWritten = 0L
             var lastUpdateTime = System.currentTimeMillis()
-            val startTime = lastUpdateTime
+            var hmacBuffer = ByteArray(0) // Buffer to collect data for HMAC verification
 
-            // Read all remaining data except last 32 bytes (HMAC)
-            var pendingData = ByteArray(0)
-            var endOfStream = false
-
-            while (!endOfStream) {
+            // Read file data chunks until we reach the HMAC at the end
+            while (true) {
                 val bytesRead = inputStream.read(buffer)
-                if (bytesRead == -1) {
-                    endOfStream = true
-                    // Process any remaining pending data
-                    if (pendingData.size > HMAC_SIZE) {
-                        val dataToProcess = pendingData.size - HMAC_SIZE
-                        val dataChunk = pendingData.sliceArray(0 until dataToProcess)
+                if (bytesRead == -1) break
 
-                        // Update HMAC and decrypt
-                        mac.update(dataChunk)
-                        val decryptedChunk = ctrCipher.update(dataChunk)
-                        if (decryptedChunk != null) {
-                            outputStream.write(decryptedChunk)
-                            fileBytesWritten += decryptedChunk.size
-                        }
+                // Add to HMAC buffer for final verification
+                val newHmacBuffer = ByteArray(hmacBuffer.size + bytesRead)
+                hmacBuffer.copyInto(newHmacBuffer)
+                buffer.copyInto(newHmacBuffer, hmacBuffer.size, 0, bytesRead)
 
-                        // Extract HMAC from last 32 bytes
-                        val receivedHmac = pendingData.sliceArray(dataToProcess until pendingData.size)
+                // If we have more than HMAC_SIZE bytes, we can process some data
+                if (newHmacBuffer.size > HMAC_SIZE) {
+                    val dataToProcess = newHmacBuffer.size - HMAC_SIZE
+                    val dataChunk = newHmacBuffer.sliceArray(0 until dataToProcess)
 
-                        // Verify HMAC
-                        val calculatedHmac = mac.doFinal()
-                        if (!calculatedHmac.contentEquals(receivedHmac)) {
-                            Log.e("CryptoHelper", "HMAC verification failed - data may be corrupted or tampered")
-                            return false
-                        }
-
-                        Log.d("CryptoHelper", "HMAC verification successful")
+                    // Decrypt and write this chunk immediately
+                    mac.update(dataChunk)
+                    val decryptedChunk = ctrCipher.update(dataChunk)
+                    if (decryptedChunk != null && decryptedChunk.isNotEmpty()) {
+                        outputStream.write(decryptedChunk)
+                        outputStream.flush() // Force immediate write to disk
+                        fileBytesWritten += decryptedChunk.size
                     }
+
+                    // Keep only the last HMAC_SIZE bytes for final verification
+                    hmacBuffer = newHmacBuffer.sliceArray(dataToProcess until newHmacBuffer.size)
                 } else {
-                    // Append new data to pending
-                    val newPending = ByteArray(pendingData.size + bytesRead)
-                    pendingData.copyInto(newPending)
-                    buffer.copyInto(newPending, pendingData.size, 0, bytesRead)
-
-                    // If we have enough data (keep last 32 bytes for HMAC), process it
-                    if (newPending.size > HMAC_SIZE + BUFFER_SIZE) {
-                        val dataToProcess = newPending.size - HMAC_SIZE - BUFFER_SIZE
-                        val dataChunk = newPending.sliceArray(0 until dataToProcess)
-
-                        // Update HMAC and decrypt
-                        mac.update(dataChunk)
-                        val decryptedChunk = ctrCipher.update(dataChunk)
-                        if (decryptedChunk != null) {
-                            outputStream.write(decryptedChunk)
-                            outputStream.flush() // Ensure data is written immediately
-                            fileBytesWritten += decryptedChunk.size
-                        }
-
-                        // Keep remaining data as pending
-                        pendingData = newPending.sliceArray(dataToProcess until newPending.size)
-                    } else {
-                        pendingData = newPending
-                    }
-
-                    totalBytesProcessed += bytesRead
+                    hmacBuffer = newHmacBuffer
                 }
 
                 val currentTime = System.currentTimeMillis()
-
-                // Report progress every 250ms for smooth updates
-                if (progressCallback != null && (currentTime - lastUpdateTime > 250 || endOfStream)) {
+                // Report progress every 100ms for smooth updates
+                if (progressCallback != null && (currentTime - lastUpdateTime > 100)) {
                     progressCallback(fileBytesWritten, fileName, fileSize)
                     lastUpdateTime = currentTime
                 }
+
+                // Clear buffer to free memory immediately
+                buffer.fill(0)
+            }
+
+            // Verify HMAC from the last HMAC_SIZE bytes
+            if (hmacBuffer.size == HMAC_SIZE) {
+                val calculatedHmac = mac.doFinal()
+                if (!calculatedHmac.contentEquals(hmacBuffer)) {
+                    Log.e("CryptoHelper", "HMAC verification failed - data may be corrupted or tampered")
+                    return false
+                }
+                Log.d("CryptoHelper", "HMAC verification successful")
+            } else {
+                Log.e("CryptoHelper", "Invalid HMAC size: ${hmacBuffer.size}, expected: $HMAC_SIZE")
+                return false
             }
 
             // Finalize decryption
             val finalChunk = ctrCipher.doFinal()
             if (finalChunk != null && finalChunk.isNotEmpty()) {
                 outputStream.write(finalChunk)
+                outputStream.flush()
                 fileBytesWritten += finalChunk.size
             }
 
-            outputStream.flush()
+            // Final progress update
+            progressCallback?.invoke(fileBytesWritten, fileName, fileSize)
 
-            Log.d("CryptoHelper", "File decrypted successfully with true streaming AES-CTR+HMAC verification. Processed $fileBytesWritten bytes")
+            Log.d("CryptoHelper", "File decrypted successfully with optimized streaming. Processed $fileBytesWritten bytes")
             true
         } catch (e: Exception) {
-            Log.e("CryptoHelper", "True streaming AES-CTR+HMAC decryption failed: ${e.message}")
+            Log.e("CryptoHelper", "Optimized streaming decryption failed: ${e.message}")
             false
         }
     }
 
-    data class EncryptionMetadata(
-        val iv: ByteArray,   // IV for AES-CTR
-        val salt: ByteArray  // Salt used for key derivation
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
+    /**
+     * TRUE STREAMING ENCRYPTION - encrypts and sends 8MB chunks immediately
+     */
+    fun encryptFileStreamWithProgress(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        secret: String,
+        fileSize: Long,
+        fileName: String,
+        progressCallback: ((bytesProcessed: Long, totalBytes: Long, speed: Float) -> Unit)? = null
+    ): Boolean {
+        return try {
+            // Generate salt and IV
+            val salt = generateSalt()
+            val iv = generateUniqueIV()
 
-            other as EncryptionMetadata
+            // Derive encryption and HMAC keys
+            val (encryptionKey, hmacKey) = deriveKeys(secret, salt)
 
-            if (!iv.contentEquals(other.iv)) return false
-            if (!salt.contentEquals(other.salt)) return false
+            // Initialize HMAC for authentication
+            val mac = javax.crypto.Mac.getInstance(HMAC_ALGORITHM)
+            mac.init(hmacKey)
 
-            return true
+            // Write salt and IV first
+            outputStream.write(salt)
+            outputStream.write(iv)
+
+            // Update HMAC with salt and IV
+            mac.update(salt)
+            mac.update(iv)
+
+            // Use AES-CTR mode for streaming encryption
+            val ctrCipher = Cipher.getInstance(TRANSFORMATION_CTR)
+            val ctrSpec = IvParameterSpec(iv)
+            ctrCipher.init(Cipher.ENCRYPT_MODE, encryptionKey, ctrSpec)
+
+            // Create and encrypt file header
+            val fileHeader = createFileHeader(fileName, fileSize)
+            val encryptedHeader = ctrCipher.update(fileHeader)
+            mac.update(encryptedHeader)
+            outputStream.write(encryptedHeader)
+            outputStream.flush()
+
+            Log.d("CryptoHelper", "Encrypted file header written: fileName=$fileName, fileSize=$fileSize")
+
+            // Stream the actual file data in 8MB chunks
+            val buffer = ByteArray(BUFFER_SIZE) // 8MB chunks
+            var bytesProcessed = 0L
+            var startTime = System.currentTimeMillis()
+            var lastUpdateTime = startTime
+
+            while (true) {
+                val bytesRead = inputStream.read(buffer)
+                if (bytesRead == -1) break
+
+                // Create chunk with actual data size
+                val dataChunk = if (bytesRead == BUFFER_SIZE) {
+                    buffer
+                } else {
+                    buffer.copyOf(bytesRead)
+                }
+
+                // Encrypt and write this chunk immediately
+                val encryptedChunk = ctrCipher.update(dataChunk)
+                if (encryptedChunk != null && encryptedChunk.isNotEmpty()) {
+                    mac.update(encryptedChunk)
+                    outputStream.write(encryptedChunk)
+                    outputStream.flush() // Force immediate write to network
+                }
+
+                bytesProcessed += bytesRead
+
+                val currentTime = System.currentTimeMillis()
+                // Report progress every 100ms for smooth updates
+                if (progressCallback != null && (currentTime - lastUpdateTime > 100)) {
+                    val elapsedSeconds = (currentTime - startTime) / 1000f
+                    val speed = if (elapsedSeconds > 0.1f) bytesProcessed / elapsedSeconds else 0f
+                    progressCallback(bytesProcessed, fileSize, speed)
+                    lastUpdateTime = currentTime
+                }
+
+                // Clear buffer to free memory immediately
+                buffer.fill(0)
+            }
+
+            // Finalize encryption
+            val finalChunk = ctrCipher.doFinal()
+            if (finalChunk != null && finalChunk.isNotEmpty()) {
+                mac.update(finalChunk)
+                outputStream.write(finalChunk)
+            }
+
+            // Write HMAC for authentication
+            val hmac = mac.doFinal()
+            outputStream.write(hmac)
+            outputStream.flush()
+
+            // Final progress update
+            val finalTime = System.currentTimeMillis()
+            val totalElapsedSeconds = (finalTime - startTime) / 1000f
+            val finalSpeed = if (totalElapsedSeconds > 0) bytesProcessed / totalElapsedSeconds else 0f
+            progressCallback?.invoke(bytesProcessed, fileSize, finalSpeed)
+
+            Log.d("CryptoHelper", "File encrypted successfully with streaming. Processed $bytesProcessed bytes")
+            true
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Streaming encryption failed: ${e.message}")
+            false
         }
+    }
 
-        override fun hashCode(): Int {
-            var result = iv.contentHashCode()
-            result = 31 * result + salt.contentHashCode()
-            return result
+    /**
+     * Generate a cryptographically secure 256-bit hex key for use as handshake secret
+     */
+    fun generateSecureSecret(): String {
+        return try {
+            // Use SecureRandom for cryptographically strong random key
+            val secureRandom = SecureRandom()
+            val keyBytes = ByteArray(32) // 256 bits = 32 bytes
+            secureRandom.nextBytes(keyBytes)
+
+            // Convert to hex string
+            val hexKey = keyBytes.joinToString("") { byte ->
+                "%02x".format(byte)
+            }
+
+            Log.d("CryptoHelper", "Generated secure 256-bit hex key with strong entropy")
+            hexKey
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Failed to generate secure secret", e)
+            // Fallback - should never happen but better safe than sorry
+            val fallbackRandom = SecureRandom()
+            val fallbackBytes = ByteArray(32)
+            fallbackRandom.nextBytes(fallbackBytes)
+            fallbackBytes.joinToString("") { "%02x".format(it) }
         }
     }
 }
