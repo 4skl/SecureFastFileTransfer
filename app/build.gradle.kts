@@ -51,23 +51,23 @@ dependencies {
     implementation(libs.androidx.material3)
 
     // Kotlin Coroutines for modern async programming
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation(libs.kotlinx.coroutines.android)
 
     // Material Icons Extended for more icons
-    implementation("androidx.compose.material:material-icons-extended:1.7.6")
+    implementation(libs.androidx.material.icons.extended)
 
     // QR Code generation and scanning - updated to latest versions
-    implementation("com.google.zxing:core:3.5.3")
-    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation(libs.google.zxing.core)
+    implementation(libs.journeyapps.zxing.android)
 
     // Updated Camera libraries to latest versions for better security
-    implementation("androidx.camera:camera-core:1.4.0")
-    implementation("androidx.camera:camera-camera2:1.4.0")
-    implementation("androidx.camera:camera-lifecycle:1.4.0")
-    implementation("androidx.camera:camera-view:1.4.0")
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     // Permissions handling for camera
-    implementation("com.google.accompanist:accompanist-permissions:0.36.0")
+    implementation(libs.accompanist.permissions)
 
     implementation(libs.androidx.documentfile)
 

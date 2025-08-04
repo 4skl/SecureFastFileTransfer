@@ -82,7 +82,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private var selectedSaveDirectory: Uri? = null
     private var peerIpAddress: String? = null
     private var waitingForSecret by mutableStateOf(false)
-    private var displayedSecret by mutableStateOf("")
     private var showQRCode by mutableStateOf(false)
     private var qrCodeBitmap by mutableStateOf<Bitmap?>(null)
     private var showManualSecretDialog by mutableStateOf(false)
@@ -131,10 +130,10 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     // QR Code scanner launcher
     private val qrScannerLauncher = registerForActivityResult(ScanContract()) { result ->
         if (result.contents != null) {
-            val scannedSecret = result.contents
-            if (QRCodeHelper.isValidSecret(scannedSecret)) {
-                handshakeSecret = scannedSecret
-                displayedSecret = scannedSecret
+            // Sanitize and validate the scanned text
+            val sanitizedSecret = QRCodeHelper.sanitizeScannedText(result.contents)
+            if (sanitizedSecret != null && QRCodeHelper.isValidSecret(sanitizedSecret)) {
+                handshakeSecret = sanitizedSecret
                 status = "Secret scanned! Connecting to sender..."
                 waitingForSecret = false
                 startWifiTransfer()
@@ -221,10 +220,9 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         if (uri != null) {
             selectedFileUri = uri
             val fileName = getFileNameFromUri(this, uri)
-            // Generate secret immediately when file is selected
-            val generatedSecret = UUID.randomUUID().toString()
+            // Use the secure secret generation from QRCodeHelper
+            val generatedSecret = QRCodeHelper.generateSecureSecret()
             handshakeSecret = generatedSecret
-            displayedSecret = generatedSecret
             status = "File selected: $fileName. Share the QR code or secret with receiver."
 
             // Generate QR code
@@ -363,7 +361,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         Text("📥 Receive File")
                     }
 
-                    if (displayedSecret.isNotEmpty()) {
+                    if (handshakeSecret != null) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
@@ -703,7 +701,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         // Verify and proceed with manual secret
                         if (manualSecretInput.length >= 30) { // UUID length
                             handshakeSecret = manualSecretInput
-                            displayedSecret = manualSecretInput
                             status = "Secret received! Connecting to sender..."
                             showManualSecretDialog = false
                             waitingForSecret = false
@@ -879,7 +876,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     // Required helper functions
     private fun resetState() {
         handshakeSecret = null
-        displayedSecret = ""
         selectedFileUri = null
         peerIpAddress = null
         isSearchingDevices = false
