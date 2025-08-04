@@ -442,4 +442,170 @@ object CryptoHelper {
             fallbackBytes.joinToString("") { "%02x".format(it) }
         }
     }
+
+    /**
+     * Enhanced validation for secrets with multiple security checks for 256-bit hex keys
+     */
+    fun isValidSecret(secret: String?): Boolean {
+        if (secret.isNullOrBlank()) {
+            Log.w("CryptoHelper", "Empty or null secret provided")
+            return false
+        }
+
+        return try {
+            // First sanitize the input
+            val sanitized = sanitizeSecret(secret) ?: return false
+
+            // Check if it's a valid 256-bit hex key format (64 hex characters)
+            val isValidLength = sanitized.length == MIN_SECRET_LENGTH
+            val hasValidFormat = sanitized.matches(Regex("[0-9a-fA-F]{64}"))
+            val isNotAllZeros = sanitized != "0".repeat(64) // Reject all-zero key
+            val isNotAllOnes = sanitized.uppercase() != "F".repeat(64) // Reject all-ones key
+
+            // Use the validateSecretStrength method for additional validation
+            val hasGoodStrength = validateSecretStrength(sanitized)
+
+            val isValid = isValidLength && hasValidFormat && isNotAllZeros && isNotAllOnes && hasGoodStrength
+
+            if (!isValid) {
+                Log.w("CryptoHelper", "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notAllZeros=$isNotAllZeros, notAllOnes=$isNotAllOnes, strength=$hasGoodStrength")
+            } else {
+                Log.d("CryptoHelper", "Secret validation successful")
+            }
+
+            isValid
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Unexpected error during secret validation", e)
+            false
+        }
+    }
+
+    /**
+     * Validate the strength of a secret for cryptographic use
+     */
+    fun validateSecretStrength(secret: String): Boolean {
+        if (secret.length < MIN_SECRET_LENGTH) {
+            Log.w("CryptoHelper", "Secret too short: ${secret.length} < $MIN_SECRET_LENGTH")
+            return false
+        }
+
+        // For hex keys, check for sufficient entropy (mix of different hex digits)
+        val hexDigits = secret.lowercase().toCharArray().distinct()
+        val hasGoodEntropy = hexDigits.size >= 8 // At least 8 different hex digits
+
+        if (!hasGoodEntropy) {
+            Log.w("CryptoHelper", "Secret has insufficient entropy: only ${hexDigits.size} different hex digits")
+        }
+
+        // Additional check: ensure it's not a predictable pattern
+        val isNotSequential = !isSequentialPattern(secret)
+        val isNotRepeating = !isRepeatingPattern(secret)
+
+        val isStrong = hasGoodEntropy && isNotSequential && isNotRepeating
+
+        if (!isStrong) {
+            Log.w("CryptoHelper", "Secret failed strength validation: entropy=$hasGoodEntropy, notSequential=$isNotSequential, notRepeating=$isNotRepeating")
+        }
+
+        return isStrong
+    }
+
+    /**
+     * Sanitize secret text to remove any potential malicious content
+     */
+    fun sanitizeSecret(secret: String?): String? {
+        if (secret.isNullOrBlank()) return null
+
+        return try {
+            // Remove any whitespace and control characters
+            val cleaned = secret.trim().replace(Regex("[\\p{Cntrl}]"), "")
+
+            // Limit length to prevent DoS attacks
+            val maxLength = 100 // Reasonable limit for hex key + some margin
+            val truncated = if (cleaned.length > maxLength) {
+                Log.w("CryptoHelper", "Input text too long, truncating from ${cleaned.length} to $maxLength characters")
+                cleaned.take(maxLength)
+            } else {
+                cleaned
+            }
+
+            // Only allow hex characters (0-9, a-f, A-F)
+            val sanitized = truncated.replace(Regex("[^a-fA-F0-9]"), "")
+
+            if (sanitized != truncated) {
+                Log.w("CryptoHelper", "Removed non-hex characters from input")
+            }
+
+            // Return null if the sanitized string is too short to be a valid hex key
+            if (sanitized.length < MIN_SECRET_LENGTH) {
+                Log.w("CryptoHelper", "Sanitized text too short to be a valid hex key: ${sanitized.length}")
+                return null
+            }
+
+            Log.d("CryptoHelper", "Successfully sanitized secret")
+            sanitized
+        } catch (e: Exception) {
+            Log.e("CryptoHelper", "Error sanitizing secret", e)
+            null
+        }
+    }
+
+    /**
+     * Check if the secret contains sequential patterns
+     */
+    private fun isSequentialPattern(secret: String): Boolean {
+        val cleaned = secret.lowercase()
+
+        // Check for ascending sequences (like "123456" or "abcdef")
+        for (i in 0 until cleaned.length - 2) {
+            val char1 = cleaned[i]
+            val char2 = cleaned[i + 1]
+            val char3 = cleaned[i + 2]
+
+            // Check if it's a sequence in hex digits (0-9, a-f)
+            val isHexSequence = when {
+                char1.isDigit() && char2.isDigit() && char3.isDigit() -> {
+                    char2.code == char1.code + 1 && char3.code == char2.code + 1
+                }
+                char1.isLetter() && char2.isLetter() && char3.isLetter() -> {
+                    char2.code == char1.code + 1 && char3.code == char2.code + 1
+                }
+                else -> false
+            }
+
+            if (isHexSequence) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Check if the secret contains repeating patterns
+     */
+    private fun isRepeatingPattern(secret: String): Boolean {
+        val cleaned = secret.lowercase()
+
+        // Check for repeating characters (more than 4 in a row)
+        for (i in 0 until cleaned.length - 4) {
+            val char = cleaned[i]
+            if (cleaned.substring(i, i + 5).all { it == char }) {
+                return true
+            }
+        }
+
+        // Check for repeating short patterns
+        for (patternLength in 2..8) {
+            for (i in 0 until cleaned.length - (patternLength * 2)) {
+                val pattern = cleaned.substring(i, i + patternLength)
+                val nextPart = cleaned.substring(i + patternLength, i + patternLength * 2)
+                if (pattern == nextPart) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
 }
