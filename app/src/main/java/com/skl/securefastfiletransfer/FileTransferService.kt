@@ -236,6 +236,8 @@ class FileTransferService : Service() {
             var lastProgressUpdate = System.currentTimeMillis()
             var receivedFileName: String? = null
             var totalFileSize: Long = 0L
+            var startTime = System.currentTimeMillis()
+            var lastBytesProcessed = 0L
 
             // Enhanced progress reporting callback with real-time updates
             val progressCallback: (Long, String?, Long?) -> Unit = { bytesProcessed, fileName, fileSize ->
@@ -248,6 +250,7 @@ class FileTransferService : Service() {
                 }
                 if (fileSize != null && fileSize > 0 && totalFileSize == 0L) {
                     totalFileSize = fileSize
+                    startTime = currentTime // Reset start time when we know the file size
                     Log.d("FileTransferService", "File size: $fileSize bytes")
                 }
 
@@ -260,15 +263,24 @@ class FileTransferService : Service() {
                         if (totalFileSize > 0) {
                             progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalFileSize)
                         }
-                        // Calculate speed based on time elapsed
-                        val elapsedSeconds = (currentTime - lastProgressUpdate) / 1000f
-                        val speed = if (elapsedSeconds > 0) bytesProcessed / elapsedSeconds else 0f
+
+                        // Calculate speed based on total elapsed time and bytes processed
+                        val elapsedSeconds = (currentTime - startTime) / 1000f
+                        val speed = if (elapsedSeconds > 0.1f) { // Avoid division by very small numbers
+                            val bytesSinceStart = bytesProcessed - lastBytesProcessed
+                            val timeSinceLastUpdate = (currentTime - lastProgressUpdate) / 1000f
+                            if (timeSinceLastUpdate > 0) bytesSinceStart / timeSinceLastUpdate else 0f
+                        } else {
+                            0f
+                        }
+
                         progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
                         progressIntent.putExtra(EXTRA_IS_SENDING, false)
                         progressIntent.putExtra(EXTRA_OPERATION_TYPE, "receiving_and_decrypting")
                         sendBroadcast(progressIntent)
                     }
                     lastProgressUpdate = currentTime
+                    lastBytesProcessed = bytesProcessed
                 }
             }
 

@@ -70,8 +70,8 @@ import java.io.DataOutputStream
 
 class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private lateinit var wifiTransferHelper: WiFiTransferHelper
-    private var handshakeSecret: String? = null
-    private var isSender = false
+    private var handshakeSecret by mutableStateOf<String?>(null)
+    private var isSender by mutableStateOf(false)
     private var showConfirmDialog by mutableStateOf(false)
     private var status by mutableStateOf("Ready to start secure file transfer")
     private var selectedFileUri: Uri? = null
@@ -170,15 +170,25 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         "encrypting" -> "🔐 Encrypting file... ${(transferProgress * 100).toInt()}%"
                         "encrypting_and_sending" -> "📤 Encrypting and sending... ${(transferProgress * 100).toInt()}%"
                         "waiting_for_connection" -> "⏳ Waiting for sender connection..."
-                        "receiving_and_decrypting" -> if (totalBytes > 0) {
-                            "📥 Receiving and decrypting... ${(transferProgress * 100).toInt()}%"
-                        } else {
-                            "📥 Receiving and decrypting..."
+                        "receiving_and_decrypting" -> {
+                            if (totalBytes > 0) {
+                                val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
+                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)"
+                            } else {
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
+                            }
                         }
                         else -> {
-                            // For receiver without total size
-                            val processedMB = bytesProcessed / (1024f * 1024f)
-                            "📥 Receiving: ${String.format("%.1f MB", processedMB)} received"
+                            if (isSending) {
+                                if (totalBytes > 0) {
+                                    val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
+                                    "📤 Sending: $progressText (${(transferProgress * 100).toInt()}%)"
+                                } else {
+                                    "📤 Sending: ${formatBytes(bytesProcessed)}"
+                                }
+                            } else {
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
+                            }
                         }
                     }
                 }
@@ -216,18 +226,33 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
     private val pickFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
+            // Clean up only transfer progress data, but keep UI state intact
+            isTransferInProgress = false
+            transferProgress = 0f
+            transferSpeed = 0f
+            bytesTransferred = 0L
+            totalBytes = 0L
+
             selectedFileUri = uri
             val fileName = getFileNameFromUri(this, uri)
+
+            // IMPORTANT: Ensure we're in sender mode when file is selected
+            isSender = true
+
             // Generate a NEW secret each time a file is selected for enhanced security
             val generatedSecret = QRCodeHelper.generateSecureSecret()
             handshakeSecret = generatedSecret
-            status = "File selected: $fileName. Share the QR code or secret with receiver."
 
             // Generate QR code with the new secret
             qrCodeBitmap = QRCodeHelper.generateQRCode(generatedSecret, 400)
-            showQRCode = true
 
-            Log.d("MainActivity", "Generated new secret for file: $fileName")
+            status = "File selected: $fileName. Share the QR code or secret with receiver."
+
+            Log.d("MainActivity", "File selected: $fileName")
+            Log.d("MainActivity", "Secret generated: ${generatedSecret.take(10)}...")
+            Log.d("MainActivity", "isSender: $isSender")
+            Log.d("MainActivity", "handshakeSecret not null: ${handshakeSecret != null}")
+            Log.d("MainActivity", "QR code generated: ${qrCodeBitmap != null}")
         }
     }
 
@@ -338,8 +363,8 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
                     Button(
                         onClick = {
+                            // Set sender mode without clearing UI state
                             isSender = true
-                            resetState()
                             status = "Select a file to send"
                             pickFileLauncher.launch("*/*")
                         },
@@ -421,19 +446,68 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
 
-                                if (isSender && qrCodeBitmap != null) {
-                                    Spacer(modifier = Modifier.height(8.dp))
+                                // Show QR code and additional options for senders
+                                if (isSender) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    // Primary QR Code button - always show for senders
                                     Button(
                                         onClick = {
+                                            // Ensure QR code is generated if not already done
+                                            if (qrCodeBitmap == null && handshakeSecret != null) {
+                                                qrCodeBitmap = QRCodeHelper.generateQRCode(handshakeSecret!!, 400)
+                                            }
                                             showQRCode = true
-                                        }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy, // Using a QR-like icon
+                                            contentDescription = "Show QR Code",
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text("📱 Show QR Code")
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // Additional helper buttons for senders
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Regenerate secret button
+                                        Button(
+                                            onClick = {
+                                                // Generate a new secret
+                                                val newSecret = QRCodeHelper.generateSecureSecret()
+                                                handshakeSecret = newSecret
+                                                qrCodeBitmap = QRCodeHelper.generateQRCode(newSecret, 400)
+                                                Toast.makeText(this@MainActivity, "New secret generated!", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("🔄 New Secret", style = MaterialTheme.typography.bodySmall)
+                                        }
+
+                                        // Share secret button (could open share dialog in future)
+                                        Button(
+                                            onClick = {
+                                                // For now, just copy to clipboard and show toast
+                                                clipboardManager.setText(AnnotatedString(handshakeSecret ?: ""))
+                                                Toast.makeText(this@MainActivity, "Secret copied! Share it with the receiver.", Toast.LENGTH_LONG).show()
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("📤 Share", style = MaterialTheme.typography.bodySmall)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+
 
                     // Scan QR Code button for receivers
                     if (waitingForSecret) {
@@ -452,17 +526,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                             }
                         ) {
                             Text("📷 Scan QR Code")
-                        }
-                    }
-
-                    if (waitingForSecret) {
-                        Button(
-                            onClick = {
-                                // Manual secret input
-                                showManualSecretDialog = true
-                            }
-                        ) {
-                            Text("⌨️ Enter Secret Manually")
                         }
                     }
 
@@ -879,6 +942,8 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         selectedFileUri = null
         peerIpAddress = null
         isSearchingDevices = false
+        // Clean up transfer data
+        cleanupTransferData()
     }
 
     private fun resetToIdle() {
@@ -887,6 +952,35 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         status = "Ready to start secure file transfer"
         isSender = false
         resetState()
+        // Clean up transfer data
+        cleanupTransferData()
+    }
+
+    /**
+     * Clean up transfer data between transfers
+     */
+    private fun cleanupTransferData() {
+        isTransferInProgress = false
+        transferProgress = 0f
+        transferSpeed = 0f
+        bytesTransferred = 0L
+        totalBytes = 0L
+        qrCodeBitmap = null
+        // Clear any cached file data
+        System.gc() // Suggest garbage collection to free memory
+        Log.d("MainActivity", "Transfer data cleaned up")
+    }
+
+    /**
+     * Format bytes to human readable format
+     */
+    private fun formatBytes(bytes: Long): String {
+        return when {
+            bytes >= 1_000_000_000 -> String.format("%.1f GB", bytes / 1_000_000_000.0)
+            bytes >= 1_000_000 -> String.format("%.1f MB", bytes / 1_000_000.0)
+            bytes >= 1_000 -> String.format("%.1f KB", bytes / 1_000.0)
+            else -> "$bytes B"
+        }
     }
 
     private fun getFileNameFromUri(context: Context, uri: Uri): String? {
@@ -996,23 +1090,22 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             // Get filename for the encrypted header
             val fileName = getFileNameFromUri(this, selectedFileUri!!) ?: "unknown_file"
 
-            // Get file size directly from URI without copying
+            // Get file size efficiently using file descriptor
             val fileSize = try {
-                contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
-                    var size = 0L
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        size += bytesRead
-                    }
-                    size
+                contentResolver.openFileDescriptor(selectedFileUri!!, "r")?.use { pfd ->
+                    pfd.statSize
+                } ?: run {
+                    // Fallback method if file descriptor not available
+                    contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
+                        inputStream.available().toLong()
+                    } ?: -1L
                 }
             } catch (e: Exception) {
                 Log.e("MainActivity", "Failed to get file size: ${e.message}")
                 -1L
             }
 
-            if (fileSize == null || fileSize <= 0) {
+            if (fileSize <= 0) {
                 status = "Failed to determine file size"
                 return
             }
@@ -1020,65 +1113,31 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             status = "Starting encrypted file transfer..."
             isTransferInProgress = true
 
-            // Use direct streaming - no file copying to cache
+            // Use FileTransferService for both sending and receiving to avoid UI thread blocking
+            Log.d("MainActivity", "Starting file transfer via FileTransferService - Size: ${formatBytes(fileSize)}")
+
+            // Create a temporary file path that FileTransferService can access
+            val tempFile = File(cacheDir, "temp_send_${System.currentTimeMillis()}")
+
+            // Copy selected file to temp location in background
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
-                        // Create socket connection
-                        val socket = java.net.Socket()
-                        socket.connect(java.net.InetSocketAddress(peerIpAddress!!, 8989))
-                        socket.soTimeout = 0
-
-                        val outputStream = socket.getOutputStream()
-                        val dataOutputStream = DataOutputStream(outputStream)
-
-                        // Progress callback for streaming encryption
-                        val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
-                            runOnUiThread {
-                                val progress = if (totalBytes > 0) (bytesProcessed * 100 / totalBytes).toInt() else 0
-                                val speedText = if (speed > 0) {
-                                    val speedKB = speed / 1024f
-                                    if (speedKB > 1024) {
-                                        String.format("%.1f MB/s", speedKB / 1024f)
-                                    } else {
-                                        String.format("%.1f KB/s", speedKB)
-                                    }
-                                } else "Calculating..."
-
-                                status = "📤 Sending: $progress% ($speedText)"
-                                transferProgress = progress.toFloat()
-                                bytesTransferred = bytesProcessed
-                                this@MainActivity.totalBytes = totalBytes
-                                transferSpeed = speed / 1024f
-                            }
-                        }
-
-                        // Stream encrypt directly from URI to socket
-                        val encryptionMetadata = CryptoHelper.encryptFileStreamWithProgress(
-                            inputStream,
-                            dataOutputStream,
-                            handshakeSecret!!,
-                            fileSize,
-                            fileName,
-                            progressCallback
-                        )
-
-                        dataOutputStream.close()
-                        socket.close()
-
-                        if (encryptionMetadata != null) {
-                            runOnUiThread {
-                                status = "File sent successfully!"
-                                isTransferInProgress = false
-                                Toast.makeText(this@MainActivity, "File sent successfully!", Toast.LENGTH_LONG).show()
-                                resetToIdle()
-                            }
-                        } else {
-                            throw Exception("Encryption failed")
+                        tempFile.outputStream().use { outputStream ->
+                            inputStream.copyTo(outputStream)
                         }
                     }
+
+                    // Now start the service with the temp file
+                    FileTransferService.startService(
+                        context = this@MainActivity,
+                        action = FileTransferService.ACTION_SEND_FILE,
+                        filePath = tempFile.absolutePath,
+                        hostAddress = peerIpAddress!!,
+                        secret = handshakeSecret!!
+                    )
                 } catch (e: Exception) {
-                    Log.e("MainActivity", "Streaming transfer failed: ${e.message}")
+                    Log.e("MainActivity", "Failed to prepare file for transfer: ${e.message}")
                     runOnUiThread {
                         status = "Transfer failed: ${e.message}"
                         isTransferInProgress = false
@@ -1090,7 +1149,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             status = "Ready to receive encrypted file..."
             isTransferInProgress = true
 
-            // Use FileTransferService for file reception with filename extraction
+            // Use FileTransferService for file reception
             FileTransferService.startService(
                 context = this,
                 action = FileTransferService.ACTION_RECEIVE_FILE,
