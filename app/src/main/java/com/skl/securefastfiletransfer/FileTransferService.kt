@@ -11,7 +11,6 @@ import kotlinx.coroutines.*
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketTimeoutException
 
 class FileTransferService : Service() {
 
@@ -139,8 +138,8 @@ class FileTransferService : Service() {
             val outputStream = socket.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
-            // DO NOT send file name in clear text - it's now encrypted in the header
-            // dataOutputStream.writeUTF(file.name) // REMOVED: This was leaking filename
+            // Send file name first
+            dataOutputStream.writeUTF(file.name)
 
             // Enhanced progress reporting callback with encryption phase tracking
             var encryptionStarted = false
@@ -224,10 +223,10 @@ class FileTransferService : Service() {
             val inputStream = socket?.getInputStream()
             val dataInputStream = DataInputStream(inputStream)
 
-            // DO NOT try to receive filename in clear text - it's now encrypted in the header
-            // val fileName = dataInputStream.readUTF() // REMOVED: This was expecting clear text filename
+            // Receive file name
+            val fileName = dataInputStream.readUTF()
 
-            Log.d("FileTransferService", "Receiving encrypted file transfer...")
+            Log.d("FileTransferService", "Receiving encrypted file: $fileName")
 
             // Broadcast that decryption is starting
             val decryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -240,7 +239,16 @@ class FileTransferService : Service() {
             sendBroadcast(decryptionStartIntent)
 
             // Progress reporting callback - filename will be extracted from encrypted header
-            val progressCallback: (Long, String?, Long?) -> Unit = { bytesProcessed, extractedFileName, fileSize ->
+            var extractedFileName: String? = null
+            var extractedFileSize: Long? = null
+            val progressCallback: (Long, String?, Long?) -> Unit = { bytesProcessed, fileName, fileSize ->
+                // Store the extracted filename and size for later use
+                if (fileName != null && extractedFileName == null) {
+                    extractedFileName = fileName
+                    extractedFileSize = fileSize
+                    Log.d("FileTransferService", "Extracted filename: $fileName, size: $fileSize")
+                }
+
                 // Broadcast progress on main thread to avoid blocking transfer
                 launch(Dispatchers.Main) {
                     val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -254,27 +262,21 @@ class FileTransferService : Service() {
                 }
             }
 
-            // We need to extract the filename from the encrypted header during decryption
-            var extractedFileName = "received_file" // Default fallback
-            var savedFilePath = ""
-
-            // Create output stream for the decrypted file - handle both selected directory and fallback
-            savedFilePath = if (saveDirectoryUri != null) {
+            // Create output stream for the decrypted file using extracted filename
+            val savedFilePath = if (saveDirectoryUri != null) {
                 try {
                     // Try to save to user-selected directory using DocumentFile
                     val directory = DocumentFile.fromTreeUri(this@FileTransferService, saveDirectoryUri)
                     if (directory != null && directory.exists()) {
                         Log.d("FileTransferService", "Using user-selected directory via DocumentFile")
 
-                        // Create a temporary file first, then rename after we know the actual filename
-                        val tempFileName = "temp_${System.currentTimeMillis()}"
-                        val tempFile = directory.createFile("*/*", tempFileName)
-                        if (tempFile != null) {
-                            // Use ContentResolver to get OutputStream for DocumentFile
-                            contentResolver.openOutputStream(tempFile.uri)?.use { fileOutputStream ->
+                        // Use a temporary output stream to capture filename during decryption
+                        val tempFile = File.createTempFile("decrypt_temp", ".tmp", cacheDir)
+                        try {
+                            FileOutputStream(tempFile).use { tempOutputStream ->
                                 val success = CryptoHelper.decryptFileStreamWithProgress(
                                     dataInputStream,
-                                    fileOutputStream,
+                                    tempOutputStream,
                                     secret,
                                     progressCallback
                                 )
@@ -282,9 +284,23 @@ class FileTransferService : Service() {
                                     throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                                 }
                             }
-                            tempFile.uri.toString()
-                        } else {
-                            throw Exception("Failed to create file in selected directory")
+
+                            // Now we have the filename, create the final file
+                            val finalFileName = extractedFileName ?: "received_file"
+                            val newFile = directory.createFile("*/*", finalFileName)
+                            if (newFile != null) {
+                                // Copy from temp file to final location
+                                contentResolver.openOutputStream(newFile.uri)?.use { finalOutputStream ->
+                                    FileInputStream(tempFile).use { tempInputStream ->
+                                        tempInputStream.copyTo(finalOutputStream)
+                                    }
+                                }
+                                newFile.uri.toString()
+                            } else {
+                                throw Exception("Failed to create file in selected directory")
+                            }
+                        } finally {
+                            tempFile.delete()
                         }
                     } else {
                         throw Exception("Selected directory is not accessible")
@@ -292,11 +308,41 @@ class FileTransferService : Service() {
                 } catch (e: Exception) {
                     Log.w("FileTransferService", "Could not save to selected directory: ${e.message}, using fallback")
                     // Fallback to app directory
-                    val fallbackPath = createFileForSaving("temp_${System.currentTimeMillis()}", null)
-                    FileOutputStream(fallbackPath).use { fileOutputStream ->
+                    val tempFile = File.createTempFile("decrypt_temp", ".tmp", cacheDir)
+                    try {
+                        FileOutputStream(tempFile).use { tempOutputStream ->
+                            val success = CryptoHelper.decryptFileStreamWithProgress(
+                                dataInputStream,
+                                tempOutputStream,
+                                secret,
+                                progressCallback
+                            )
+                            if (!success) {
+                                throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+                            }
+                        }
+
+                        // Move to final location with correct filename
+                        val finalFileName = extractedFileName ?: "received_file"
+                        val fallbackPath = createFileForSaving(finalFileName, null)
+                        FileOutputStream(fallbackPath).use { finalOutputStream ->
+                            FileInputStream(tempFile).use { tempInputStream ->
+                                tempInputStream.copyTo(finalOutputStream)
+                            }
+                        }
+                        fallbackPath
+                    } finally {
+                        tempFile.delete()
+                    }
+                }
+            } else {
+                // No directory selected, use app directory
+                val tempFile = File.createTempFile("decrypt_temp", ".tmp", cacheDir)
+                try {
+                    FileOutputStream(tempFile).use { tempOutputStream ->
                         val success = CryptoHelper.decryptFileStreamWithProgress(
                             dataInputStream,
-                            fileOutputStream,
+                            tempOutputStream,
                             secret,
                             progressCallback
                         )
@@ -304,38 +350,33 @@ class FileTransferService : Service() {
                             throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                         }
                     }
-                    fallbackPath
-                }
-            } else {
-                // No directory selected, use app directory
-                val appPath = createFileForSaving("temp_${System.currentTimeMillis()}", null)
-                FileOutputStream(appPath).use { fileOutputStream ->
-                    val success = CryptoHelper.decryptFileStreamWithProgress(
-                        dataInputStream,
-                        fileOutputStream,
-                        secret,
-                        progressCallback
-                    )
-                    if (!success) {
-                        throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
+
+                    // Move to final location with correct filename
+                    val finalFileName = extractedFileName ?: "received_file"
+                    val appPath = createFileForSaving(finalFileName, null)
+                    FileOutputStream(appPath).use { finalOutputStream ->
+                        FileInputStream(tempFile).use { tempInputStream ->
+                            tempInputStream.copyTo(finalOutputStream)
+                        }
                     }
+                    appPath
+                } finally {
+                    tempFile.delete()
                 }
-                appPath
             }
 
             dataInputStream.close()
             serverSocket?.close()
             serverSocket = null
 
-            // The filename is now available from the progress callback
-            Log.d("FileTransferService", "File decrypted and saved successfully")
+            Log.d("FileTransferService", "File decrypted and saved successfully: $fileName")
             Log.d("FileTransferService", "File saved to: $savedFilePath")
 
             // Broadcast success with file path
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)
-            broadcastIntent.putExtra("message", "File received and decrypted successfully")
+            broadcastIntent.putExtra("message", "File received and decrypted successfully: $fileName")
             broadcastIntent.putExtra("file_path", savedFilePath)
             sendBroadcast(broadcastIntent)
 

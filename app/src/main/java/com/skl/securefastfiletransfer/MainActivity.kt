@@ -10,7 +10,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,9 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import java.util.UUID
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -51,7 +48,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
-import androidx.compose.runtime.LaunchedEffect
+import android.util.Log
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.layout.Row
@@ -67,10 +64,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.launch
+import java.io.DataOutputStream
 
 class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
     private lateinit var wifiTransferHelper: WiFiTransferHelper
@@ -700,16 +696,15 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 confirmButton = {
                     Button(onClick = {
                         // Verify and proceed with manual secret
-                        val sanitizedSecret = QRCodeHelper.sanitizeScannedText(manualSecretInput)
-                        if (sanitizedSecret != null && QRCodeHelper.isValidSecret(sanitizedSecret)) {
-                            handshakeSecret = sanitizedSecret
+                        if (manualSecretInput.length >= 30) { // UUID length
+                            handshakeSecret = manualSecretInput
                             status = "Secret received! Connecting to sender..."
                             showManualSecretDialog = false
                             waitingForSecret = false
                             manualSecretInput = "" // Clear the input
                             startWifiTransfer()
                         } else {
-                            Toast.makeText(this@MainActivity, "Invalid secret! Please enter exactly 64 hexadecimal characters (256-bit key)", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "Please enter the complete secret code (should be around 36 characters)", Toast.LENGTH_LONG).show()
                         }
                     }) { Text("✅ Confirm Secret") }
                 },
@@ -995,32 +990,104 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                 return
             }
 
-            // Launch coroutine to copy file without blocking UI
-            lifecycleScope.launch {
-                status = "Preparing file for transfer..."
-                val filePath = copyUriToCache(selectedFileUri!!)
-                if (filePath == null) {
-                    status = "Failed to prepare file for transfer"
-                    return@launch
+            // Get filename for the encrypted header
+            val fileName = getFileNameFromUri(this, selectedFileUri!!) ?: "unknown_file"
+
+            // Get file size directly from URI without copying
+            val fileSize = try {
+                contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
+                    var size = 0L
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        size += bytesRead
+                    }
+                    size
                 }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to get file size: ${e.message}")
+                -1L
+            }
 
-                status = "Starting encrypted file transfer..."
-                isTransferInProgress = true
+            if (fileSize == null || fileSize <= 0) {
+                status = "Failed to determine file size"
+                return
+            }
 
-                // Use FileTransferService instead of WiFiTransferHelper for file transfer
-                FileTransferService.startService(
-                    context = this@MainActivity,
-                    action = FileTransferService.ACTION_SEND_FILE,
-                    filePath = filePath,
-                    hostAddress = peerIpAddress!!,
-                    secret = handshakeSecret!!
-                )
+            status = "Starting encrypted file transfer..."
+            isTransferInProgress = true
+
+            // Use direct streaming - no file copying to cache
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
+                        // Create socket connection
+                        val socket = java.net.Socket()
+                        socket.connect(java.net.InetSocketAddress(peerIpAddress!!, 8989))
+                        socket.soTimeout = 0
+
+                        val outputStream = socket.getOutputStream()
+                        val dataOutputStream = DataOutputStream(outputStream)
+
+                        // Progress callback for streaming encryption
+                        val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
+                            runOnUiThread {
+                                val progress = if (totalBytes > 0) (bytesProcessed * 100 / totalBytes).toInt() else 0
+                                val speedText = if (speed > 0) {
+                                    val speedKB = speed / 1024f
+                                    if (speedKB > 1024) {
+                                        String.format("%.1f MB/s", speedKB / 1024f)
+                                    } else {
+                                        String.format("%.1f KB/s", speedKB)
+                                    }
+                                } else "Calculating..."
+
+                                status = "📤 Sending: $progress% ($speedText)"
+                                transferProgress = progress.toFloat()
+                                bytesTransferred = bytesProcessed
+                                this@MainActivity.totalBytes = totalBytes
+                                transferSpeed = speed / 1024f
+                            }
+                        }
+
+                        // Stream encrypt directly from URI to socket
+                        val encryptionMetadata = CryptoHelper.encryptFileStreamWithProgress(
+                            inputStream,
+                            dataOutputStream,
+                            handshakeSecret!!,
+                            fileSize,
+                            fileName,
+                            progressCallback
+                        )
+
+                        dataOutputStream.close()
+                        socket.close()
+
+                        if (encryptionMetadata != null) {
+                            runOnUiThread {
+                                status = "File sent successfully!"
+                                isTransferInProgress = false
+                                Toast.makeText(this@MainActivity, "File sent successfully!", Toast.LENGTH_LONG).show()
+                                resetToIdle()
+                            }
+                        } else {
+                            throw Exception("Encryption failed")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Streaming transfer failed: ${e.message}")
+                    runOnUiThread {
+                        status = "Transfer failed: ${e.message}"
+                        isTransferInProgress = false
+                        Toast.makeText(this@MainActivity, "Transfer failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         } else {
             status = "Ready to receive encrypted file..."
             isTransferInProgress = true
 
-            // Use FileTransferService instead of WiFiTransferHelper for file reception
+            // Use FileTransferService for file reception with filename extraction
             FileTransferService.startService(
                 context = this,
                 action = FileTransferService.ACTION_RECEIVE_FILE,
@@ -1030,21 +1097,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         }
     }
 
-    private suspend fun copyUriToCache(uri: Uri): String? = withContext(Dispatchers.IO) {
-        return@withContext try {
-            val fileName = getFileNameFromUri(this@MainActivity, uri) ?: "tempfile"
-            val file = File(cacheDir, fileName)
-            contentResolver.openInputStream(uri)?.use { input ->
-                java.io.FileOutputStream(file).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            file.absolutePath
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
 
     // WiFiTransferHelper.TransferListener implementation
     override fun onTransferProgress(bytesTransferred: Long, totalBytes: Long) {

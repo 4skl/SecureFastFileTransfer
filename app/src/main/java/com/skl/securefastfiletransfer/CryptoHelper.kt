@@ -5,10 +5,7 @@ import java.io.*
 import java.security.SecureRandom
 import java.util.Arrays
 import javax.crypto.Cipher
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 object CryptoHelper {
@@ -328,8 +325,8 @@ object CryptoHelper {
 
                 // Second pass: Verify HMAC while streaming decryption
                 FileInputStream(tempFile).use { tempIn ->
-                    // First, decrypt the file header (1MB)
-                    val encryptedHeaderSize = 1024 * 1024
+                    // First, decrypt the file header (8MB to match BUFFER_SIZE)
+                    val encryptedHeaderSize = BUFFER_SIZE // 8MB to match createFileHeader
                     val encryptedHeader = ByteArray(encryptedHeaderSize)
                     var headerBytesRead = 0
                     while (headerBytesRead < encryptedHeaderSize && headerBytesRead < actualDataSize) {
@@ -433,4 +430,3 @@ object CryptoHelper {
         }
     }
 }
-
