@@ -8,15 +8,13 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.security.SecureRandom
-import java.util.*
-import javax.crypto.KeyGenerator
 import javax.crypto.spec.SecretKeySpec
 
 object QRCodeHelper {
 
     private const val TAG = "QRCodeHelper"
-    private const val UUID_LENGTH = 36
-    private const val MIN_SECRET_LENGTH = 32
+    private const val HEX_KEY_LENGTH = 64 // 256 bits = 64 hex characters
+    private const val MIN_SECRET_LENGTH = 64 // Exactly 64 hex characters for 256-bit keys
 
     /**
      * Generate a QR code bitmap with enhanced security settings
@@ -30,14 +28,14 @@ object QRCodeHelper {
             }
 
             val writer = QRCodeWriter()
-            val hints = EnumMap<EncodeHintType, Any>(EncodeHintType::class.java).apply {
+            val hints = mapOf<EncodeHintType, Any>(
                 // Use highest error correction for better scanning reliability
-                put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.H)
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.H,
                 // Add margin for better scanning
-                put(EncodeHintType.MARGIN, 2)
+                EncodeHintType.MARGIN to 2,
                 // Use UTF-8 encoding for international compatibility
-                put(EncodeHintType.CHARACTER_SET, "UTF-8")
-            }
+                EncodeHintType.CHARACTER_SET to "UTF-8"
+            )
 
             val bitMatrix = writer.encode(secret, BarcodeFormat.QR_CODE, size, size, hints)
             val width = bitMatrix.width
@@ -62,7 +60,7 @@ object QRCodeHelper {
     }
 
     /**
-     * Enhanced validation for scanned secrets with multiple security checks
+     * Enhanced validation for scanned secrets with multiple security checks for 256-bit hex keys
      */
     fun isValidSecret(scannedText: String?): Boolean {
         if (scannedText.isNullOrBlank()) {
@@ -74,29 +72,24 @@ object QRCodeHelper {
             // First sanitize the input
             val sanitized = sanitizeScannedText(scannedText) ?: return false
 
-            // Check if it's a valid UUID format
-            val uuid = UUID.fromString(sanitized.trim())
-
-            // Additional security checks
-            val isValidLength = sanitized.length == UUID_LENGTH
-            val hasValidFormat = sanitized.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))
-            val isNotNilUuid = uuid != UUID(0L, 0L) // Reject nil UUID
+            // Check if it's a valid 256-bit hex key format (64 hex characters)
+            val isValidLength = sanitized.length == HEX_KEY_LENGTH
+            val hasValidFormat = sanitized.matches(Regex("[0-9a-fA-F]{64}"))
+            val isNotAllZeros = sanitized != "0".repeat(64) // Reject all-zero key
+            val isNotAllOnes = sanitized.uppercase() != "F".repeat(64) // Reject all-ones key
 
             // Use the validateSecretStrength method for additional validation
             val hasGoodStrength = validateSecretStrength(sanitized)
 
-            val isValid = isValidLength && hasValidFormat && isNotNilUuid && hasGoodStrength
+            val isValid = isValidLength && hasValidFormat && isNotAllZeros && isNotAllOnes && hasGoodStrength
 
             if (!isValid) {
-                Log.w(TAG, "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notNil=$isNotNilUuid, strength=$hasGoodStrength")
+                Log.w(TAG, "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notAllZeros=$isNotAllZeros, notAllOnes=$isNotAllOnes, strength=$hasGoodStrength")
             } else {
                 Log.d(TAG, "Secret validation successful")
             }
 
             isValid
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "Invalid UUID format: ${e.message}")
-            false
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error during secret validation", e)
             false
@@ -104,22 +97,29 @@ object QRCodeHelper {
     }
 
     /**
-     * Generate a cryptographically secure UUID for use as handshake secret
+     * Generate a cryptographically secure 256-bit hex key for use as handshake secret
      */
     fun generateSecureSecret(): String {
         return try {
-            // Use SecureRandom for cryptographically strong random UUID
+            // Use SecureRandom for cryptographically strong random key
             val secureRandom = SecureRandom()
-            val mostSigBits = secureRandom.nextLong()
-            val leastSigBits = secureRandom.nextLong()
+            val keyBytes = ByteArray(32) // 256 bits = 32 bytes
+            secureRandom.nextBytes(keyBytes)
 
-            val uuid = UUID(mostSigBits, leastSigBits)
-            Log.d(TAG, "Generated secure UUID secret with strong entropy")
-            uuid.toString()
+            // Convert to hex string
+            val hexKey = keyBytes.joinToString("") { byte ->
+                "%02x".format(byte)
+            }
+
+            Log.d(TAG, "Generated secure 256-bit hex key with strong entropy")
+            hexKey
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to generate secure secret, falling back to standard UUID", e)
-            // Fallback to standard UUID generation
-            UUID.randomUUID().toString()
+            Log.e(TAG, "Failed to generate secure secret", e)
+            // Fallback - should never happen but better safe than sorry
+            val fallbackRandom = SecureRandom()
+            val fallbackBytes = ByteArray(32)
+            fallbackRandom.nextBytes(fallbackBytes)
+            fallbackBytes.joinToString("") { "%02x".format(it) }
         }
     }
 
@@ -132,16 +132,12 @@ object QRCodeHelper {
             return false
         }
 
-        // Check for sufficient entropy (mix of characters)
-        val hasDigits = secret.any { it.isDigit() }
-        val hasLetters = secret.any { it.isLetter() }
-        val hasSpecialChars = secret.any { !it.isLetterOrDigit() }
-
-        // For UUID format, we expect digits, letters, and hyphens
-        val hasGoodEntropy = hasDigits && hasLetters && hasSpecialChars
+        // For hex keys, check for sufficient entropy (mix of different hex digits)
+        val hexDigits = secret.lowercase().toCharArray().distinct()
+        val hasGoodEntropy = hexDigits.size >= 8 // At least 8 different hex digits
 
         if (!hasGoodEntropy) {
-            Log.w(TAG, "Secret has insufficient entropy: digits=$hasDigits, letters=$hasLetters, special=$hasSpecialChars")
+            Log.w(TAG, "Secret has insufficient entropy: only ${hexDigits.size} different hex digits")
         }
 
         // Additional check: ensure it's not a predictable pattern
@@ -168,7 +164,7 @@ object QRCodeHelper {
             val cleaned = text.trim().replace(Regex("[\\p{Cntrl}]"), "")
 
             // Limit length to prevent DoS attacks
-            val maxLength = 100 // Reasonable limit for UUID + some margin
+            val maxLength = 100 // Reasonable limit for hex key + some margin
             val truncated = if (cleaned.length > maxLength) {
                 Log.w(TAG, "Input text too long, truncating from ${cleaned.length} to $maxLength characters")
                 cleaned.take(maxLength)
@@ -176,16 +172,16 @@ object QRCodeHelper {
                 cleaned
             }
 
-            // Only allow UUID-compatible characters (alphanumeric and hyphens)
-            val sanitized = truncated.replace(Regex("[^a-fA-F0-9\\-]"), "")
+            // Only allow hex characters (0-9, a-f, A-F)
+            val sanitized = truncated.replace(Regex("[^a-fA-F0-9]"), "")
 
             if (sanitized != truncated) {
-                Log.w(TAG, "Removed non-UUID characters from input")
+                Log.w(TAG, "Removed non-hex characters from input")
             }
 
-            // Return null if the sanitized string is too short to be a valid UUID
-            if (sanitized.length < UUID_LENGTH) {
-                Log.w(TAG, "Sanitized text too short to be a valid UUID: ${sanitized.length}")
+            // Return null if the sanitized string is too short to be a valid hex key
+            if (sanitized.length < HEX_KEY_LENGTH) {
+                Log.w(TAG, "Sanitized text too short to be a valid hex key: ${sanitized.length}")
                 return null
             }
 
@@ -201,8 +197,7 @@ object QRCodeHelper {
      * Check if the secret contains sequential patterns
      */
     private fun isSequentialPattern(secret: String): Boolean {
-        // Remove hyphens for pattern checking
-        val cleaned = secret.replace("-", "")
+        val cleaned = secret.lowercase()
 
         // Check for ascending sequences (like "123456" or "abcdef")
         for (i in 0 until cleaned.length - 2) {
@@ -210,7 +205,18 @@ object QRCodeHelper {
             val char2 = cleaned[i + 1]
             val char3 = cleaned[i + 2]
 
-            if (char2.code == char1.code + 1 && char3.code == char2.code + 1) {
+            // Check if it's a sequence in hex digits (0-9, a-f)
+            val isHexSequence = when {
+                char1.isDigit() && char2.isDigit() && char3.isDigit() -> {
+                    char2.code == char1.code + 1 && char3.code == char2.code + 1
+                }
+                char1.isLetter() && char2.isLetter() && char3.isLetter() -> {
+                    char2.code == char1.code + 1 && char3.code == char2.code + 1
+                }
+                else -> false
+            }
+
+            if (isHexSequence) {
                 return true
             }
         }
@@ -222,19 +228,18 @@ object QRCodeHelper {
      * Check if the secret contains repeating patterns
      */
     private fun isRepeatingPattern(secret: String): Boolean {
-        // Remove hyphens for pattern checking
-        val cleaned = secret.replace("-", "")
+        val cleaned = secret.lowercase()
 
-        // Check for repeating characters (more than 3 in a row)
-        for (i in 0 until cleaned.length - 3) {
+        // Check for repeating characters (more than 4 in a row)
+        for (i in 0 until cleaned.length - 4) {
             val char = cleaned[i]
-            if (cleaned.substring(i, i + 4).all { it == char }) {
+            if (cleaned.substring(i, i + 5).all { it == char }) {
                 return true
             }
         }
 
         // Check for repeating short patterns
-        for (patternLength in 2..4) {
+        for (patternLength in 2..8) {
             for (i in 0 until cleaned.length - (patternLength * 2)) {
                 val pattern = cleaned.substring(i, i + patternLength)
                 val nextPart = cleaned.substring(i + patternLength, i + patternLength * 2)
@@ -248,7 +253,7 @@ object QRCodeHelper {
     }
 
     /**
-     * Generate a cryptographically secure key for AES encryption from the secret
+     * Generate a cryptographically secure key for AES encryption from the hex secret
      */
     fun deriveEncryptionKey(secret: String): SecretKeySpec? {
         return try {
@@ -257,12 +262,11 @@ object QRCodeHelper {
                 return null
             }
 
-            // Use a proper key derivation function in production
-            // For now, we'll use a simple but secure approach
-            val keyBytes = secret.toByteArray(Charsets.UTF_8)
-            val keySpec = SecretKeySpec(keyBytes.sliceArray(0..15), "AES") // 128-bit key
+            // Convert hex string to bytes (already validated as 64 hex chars = 32 bytes)
+            val keyBytes = secret.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val keySpec = SecretKeySpec(keyBytes, "AES") // 256-bit key
 
-            Log.d(TAG, "Successfully derived encryption key from secret")
+            Log.d(TAG, "Successfully derived encryption key from hex secret")
             keySpec
         } catch (e: Exception) {
             Log.e(TAG, "Failed to derive encryption key", e)
