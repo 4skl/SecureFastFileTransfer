@@ -20,13 +20,9 @@ class FileTransferService : Service() {
 
     companion object {
         const val ACTION_SEND_FILE = "com.skl.securefastfiletransfer.SEND_FILE"
-        const val ACTION_SEND_FILE_FROM_URI = "com.skl.securefastfiletransfer.SEND_FILE_FROM_URI"
         const val ACTION_RECEIVE_FILE = "com.skl.securefastfiletransfer.RECEIVE_FILE"
         const val ACTION_STOP_SERVICE = "com.skl.securefastfiletransfer.STOP_SERVICE"
         const val EXTRA_FILE_PATH = "file_path"
-        const val EXTRA_FILE_URI = "file_uri"
-        const val EXTRA_FILE_NAME = "file_name"
-        const val EXTRA_FILE_SIZE = "file_size"
         const val EXTRA_HOST = "host_address"
         const val EXTRA_SECRET = "shared_secret"
         const val EXTRA_SAVE_DIRECTORY_URI = "save_directory_uri"
@@ -39,15 +35,12 @@ class FileTransferService : Service() {
         const val EXTRA_TOTAL_BYTES = "total_bytes"
         const val EXTRA_TRANSFER_SPEED = "transfer_speed"
         const val EXTRA_IS_SENDING = "is_sending"
-        const val EXTRA_OPERATION_TYPE = "operation_type" // "encrypting", "transferring", "decrypting"
+        const val EXTRA_OPERATION_TYPE = "operation_type" // "encrypting", "transferring", "decrypting", "verifying_integrity"
 
         fun startService(
             context: Context,
             action: String,
             filePath: String? = null,
-            fileUri: Uri? = null,
-            fileName: String? = null,
-            fileSize: Long? = null,
             hostAddress: String? = null,
             secret: String,
             saveDirectoryUri: Uri? = null
@@ -56,9 +49,6 @@ class FileTransferService : Service() {
                 this.action = action
                 putExtra(EXTRA_SECRET, secret)
                 filePath?.let { putExtra(EXTRA_FILE_PATH, it) }
-                fileUri?.let { putExtra(EXTRA_FILE_URI, it.toString()) }
-                fileName?.let { putExtra(EXTRA_FILE_NAME, it) }
-                fileSize?.let { putExtra(EXTRA_FILE_SIZE, it) }
                 hostAddress?.let { putExtra(EXTRA_HOST, it) }
                 saveDirectoryUri?.let { putExtra(EXTRA_SAVE_DIRECTORY_URI, it.toString()) }
             }
@@ -86,23 +76,6 @@ class FileTransferService : Service() {
                 if (filePath != null && hostAddress != null && secret != null) {
                     serviceScope.launch {
                         sendFile(filePath, hostAddress, secret)
-                        stopSelf(startId)
-                    }
-                } else {
-                    stopSelf(startId)
-                }
-            }
-            ACTION_SEND_FILE_FROM_URI -> {
-                val fileUriString = intent.getStringExtra(EXTRA_FILE_URI)
-                val hostAddress = intent.getStringExtra(EXTRA_HOST)
-                val secret = intent.getStringExtra(EXTRA_SECRET)
-                val fileName = intent.getStringExtra(EXTRA_FILE_NAME)
-                val fileSize = intent.getLongExtra(EXTRA_FILE_SIZE, -1L)
-
-                if (fileUriString != null && hostAddress != null && secret != null && fileName != null && fileSize > 0) {
-                    val fileUri = Uri.parse(fileUriString)
-                    serviceScope.launch {
-                        sendFileFromUri(fileUri, hostAddress, secret, fileName, fileSize)
                         stopSelf(startId)
                     }
                 } else {
@@ -207,81 +180,6 @@ class FileTransferService : Service() {
         }
     }
 
-    /**
-     * NEW: Send file directly from URI without creating temp files
-     */
-    private suspend fun sendFileFromUri(fileUri: Uri, hostAddress: String, secret: String, fileName: String, fileSize: Long) = withContext(Dispatchers.IO) {
-        try {
-            Log.d("FileTransferService", "Starting direct streaming of file: $fileName (${formatBytes(fileSize)})")
-
-            // Create connection
-            val socket = Socket()
-            socket.connect(java.net.InetSocketAddress(hostAddress, FILE_TRANSFER_PORT))
-            socket.soTimeout = 0 // No timeout during data operations
-
-            val outputStream = socket.getOutputStream()
-            val dataOutputStream = DataOutputStream(outputStream)
-
-            // Progress reporting callback
-            val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
-                launch(Dispatchers.Main) {
-                    val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
-                    progressIntent.setPackage(packageName)
-                    progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
-                    progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
-                    progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
-                    progressIntent.putExtra(EXTRA_IS_SENDING, true)
-                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting_and_sending")
-                    sendBroadcast(progressIntent)
-                }
-            }
-
-            // Stream directly from URI to network - NO TEMP FILE CREATED
-            contentResolver.openInputStream(fileUri)?.use { fileInputStream ->
-                val success = CryptoHelper.encryptFileStreamWithProgress(
-                    fileInputStream,
-                    dataOutputStream,
-                    secret,
-                    fileSize,
-                    fileName,
-                    progressCallback
-                )
-                if (!success) {
-                    throw Exception("Failed to encrypt and stream file")
-                }
-            } ?: throw Exception("Could not open input stream from URI")
-
-            dataOutputStream.close()
-            socket.close()
-
-            Log.d("FileTransferService", "File streamed successfully without temp storage: $fileName")
-
-            // Broadcast success
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", true)
-            broadcastIntent.putExtra("message", "File sent successfully")
-            sendBroadcast(broadcastIntent)
-
-        } catch (e: Exception) {
-            Log.e("FileTransferService", "Error streaming file: ${e.message}")
-            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
-            broadcastIntent.setPackage(packageName)
-            broadcastIntent.putExtra("success", false)
-            broadcastIntent.putExtra("message", "Failed to send file: ${e.message}")
-            sendBroadcast(broadcastIntent)
-        }
-    }
-
-    private fun formatBytes(bytes: Long): String {
-        return when {
-            bytes >= 1_000_000_000 -> String.format("%.1f GB", bytes / 1_000_000_000.0)
-            bytes >= 1_000_000 -> String.format("%.1f MB", bytes / 1_000_000.0)
-            bytes >= 1_000 -> String.format("%.1f KB", bytes / 1_000.0)
-            else -> "$bytes B"
-        }
-    }
-
     private suspend fun receiveFile(secret: String, saveDirectoryUri: Uri?) = withContext(Dispatchers.IO) {
         try {
             serverSocket = ServerSocket(FILE_TRANSFER_PORT)
@@ -367,6 +265,21 @@ class FileTransferService : Service() {
                 }
             }
 
+            // Integrity check callback to show when verification starts
+            val integrityCheckCallback: () -> Unit = {
+                launch(Dispatchers.Main) {
+                    val integrityIntent = Intent(ACTION_TRANSFER_PROGRESS)
+                    integrityIntent.setPackage(packageName)
+                    integrityIntent.putExtra(EXTRA_PROGRESS_BYTES, totalFileSize)
+                    integrityIntent.putExtra(EXTRA_TOTAL_BYTES, totalFileSize)
+                    integrityIntent.putExtra(EXTRA_TRANSFER_SPEED, 0f)
+                    integrityIntent.putExtra(EXTRA_IS_SENDING, false)
+                    integrityIntent.putExtra(EXTRA_OPERATION_TYPE, "verifying_integrity")
+                    sendBroadcast(integrityIntent)
+                }
+                Log.d("FileTransferService", "Broadcasting integrity verification status")
+            }
+
             // Create output stream for the decrypted file - handle both selected directory and fallback
             val savedFilePath = if (saveDirectoryUri != null) {
                 try {
@@ -383,7 +296,8 @@ class FileTransferService : Service() {
                                     dataInputStream,
                                     fileOutputStream,
                                     secret,
-                                    progressCallback
+                                    progressCallback,
+                                    integrityCheckCallback
                                 )
                                 if (!success) {
                                     throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
@@ -430,7 +344,8 @@ class FileTransferService : Service() {
                             dataInputStream,
                             fileOutputStream,
                             secret,
-                            progressCallback
+                            progressCallback,
+                            integrityCheckCallback
                         )
                         if (!success) {
                             throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
@@ -447,7 +362,8 @@ class FileTransferService : Service() {
                         dataInputStream,
                         fileOutputStream,
                         secret,
-                        progressCallback
+                        progressCallback,
+                        integrityCheckCallback
                     )
                     if (!success) {
                         throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
