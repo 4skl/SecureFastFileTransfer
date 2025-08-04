@@ -461,12 +461,6 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                                         },
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ContentCopy, // Using a QR-like icon
-                                            contentDescription = "Show QR Code",
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text("📱 Show QR Code")
                                     }
 
