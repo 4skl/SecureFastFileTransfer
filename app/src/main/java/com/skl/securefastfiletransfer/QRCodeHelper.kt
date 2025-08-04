@@ -15,9 +15,8 @@ import javax.crypto.spec.SecretKeySpec
 object QRCodeHelper {
 
     private const val TAG = "QRCodeHelper"
-    private const val UUID_LENGTH = 36
     private const val HEX_KEY_LENGTH = 64 // 256 bits = 32 bytes = 64 hex characters
-    private const val MIN_SECRET_LENGTH = 32
+    private const val MIN_SECRET_LENGTH = 64 // Enforce exactly 64 hex characters
 
     /**
      * Generate a QR code bitmap with enhanced security settings
@@ -87,39 +86,22 @@ object QRCodeHelper {
     }
 
     /**
-     * Validate if the secret is in the correct format (256-bit hex or legacy UUID)
+     * Validate if the secret is in the correct format (256-bit hex only)
      */
     fun isValidSecret(secret: String): Boolean {
         return try {
             val sanitized = sanitizeSecretInput(secret) ?: return false
 
-            // Check for 256-bit hex key format (preferred)
+            // Only accept 256-bit hex key format
             if (sanitized.length == HEX_KEY_LENGTH && sanitized.matches(Regex("[0-9a-fA-F]{64}"))) {
                 Log.d(TAG, "Valid 256-bit hex key format detected")
                 return true
             }
 
-            // Check for legacy UUID format (backward compatibility)
-            if (sanitized.length == UUID_LENGTH) {
-                val uuid = UUID.fromString(sanitized.trim())
-                val isValidLength = sanitized.length == UUID_LENGTH
-                val hasCorrectFormat = sanitized.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))
-                val isNotNilUuid = uuid != UUID(0L, 0L) // Reject nil UUID
-
-                val isValid = isValidLength && hasCorrectFormat && isNotNilUuid
-                if (isValid) {
-                    Log.d(TAG, "Valid legacy UUID format detected")
-                }
-                return isValid
-            }
-
-            Log.w(TAG, "Secret format not recognized: length=${sanitized.length}")
-            false
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "Invalid secret format: ${e.message}")
+            Log.w(TAG, "Secret must be exactly 64 hex characters (256-bit key): length=${sanitized.length}")
             false
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during secret validation", e)
+            Log.e(TAG, "Error validating secret format", e)
             false
         }
     }
@@ -128,23 +110,18 @@ object QRCodeHelper {
      * Validate the strength of a secret for cryptographic use
      */
     fun validateSecretStrength(secret: String): Boolean {
-        if (secret.length < MIN_SECRET_LENGTH) {
-            Log.w(TAG, "Secret too short: ${secret.length} < $MIN_SECRET_LENGTH")
+        // Only accept exactly 64 hex characters (256-bit keys)
+        if (secret.length != HEX_KEY_LENGTH) {
+            Log.w(TAG, "Secret must be exactly $HEX_KEY_LENGTH characters: actual length=${secret.length}")
             return false
         }
 
-        // For hex keys, ensure they're exactly 64 characters
-        if (secret.length == HEX_KEY_LENGTH && secret.matches(Regex("[0-9a-fA-F]{64}"))) {
-            return true
+        if (!secret.matches(Regex("[0-9a-fA-F]{64}"))) {
+            Log.w(TAG, "Secret must contain only hexadecimal characters (0-9, A-F)")
+            return false
         }
 
-        // For UUIDs, check minimum entropy (legacy support)
-        if (secret.length == UUID_LENGTH) {
-            return isValidSecret(secret)
-        }
-
-        Log.w(TAG, "Secret doesn't meet strength requirements")
-        return false
+        return true
     }
 
     /**
@@ -174,24 +151,15 @@ object QRCodeHelper {
                 sanitized = sanitized.substring(0, maxLength)
             }
 
-            // For hex keys, only allow hex characters
-            if (sanitized.length == HEX_KEY_LENGTH || sanitized.matches(Regex("[0-9a-f]*"))) {
-                sanitized = sanitized.filter { it.isDigit() || it in 'a'..'f' }
-                if (sanitized.length != input.trim().length && sanitized.matches(Regex("[0-9a-f]*"))) {
-                    Log.w(TAG, "Removed non-hex characters from input")
-                }
-            } else {
-                // For UUID format (legacy), preserve original case and allow hyphens
-                sanitized = input.trim()
-                sanitized = sanitized.filter { it.isLetterOrDigit() || it == '-' }
-                if (sanitized.length != input.trim().length) {
-                    Log.w(TAG, "Removed non-UUID characters from input")
-                }
+            // Only allow hex characters
+            sanitized = sanitized.filter { it.isDigit() || it in 'a'..'f' }
+            if (sanitized.length != input.trim().length) {
+                Log.w(TAG, "Removed non-hex characters from input")
             }
 
-            // Return null if the sanitized string is too short
-            if (sanitized.length < MIN_SECRET_LENGTH) {
-                Log.w(TAG, "Sanitized text too short: ${sanitized.length}")
+            // Return null if not exactly 64 characters
+            if (sanitized.length != HEX_KEY_LENGTH) {
+                Log.w(TAG, "Secret must be exactly $HEX_KEY_LENGTH hex characters: actual length=${sanitized.length}")
                 return null
             }
 

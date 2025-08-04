@@ -20,7 +20,7 @@ object CryptoHelper {
     private const val HMAC_SIZE = 32 // 256 bits for SHA256
     private const val PBKDF2_ITERATIONS = 310000 // OWASP 2023 recommendation for PBKDF2-SHA256
     private const val SALT_SIZE = 16
-    private const val MIN_SECRET_LENGTH = 32 // Now expecting 256-bit hex keys (64 chars) or UUIDs (36 chars)
+    private const val MIN_SECRET_LENGTH = 64 // Enforce exactly 64 hex characters (256-bit keys only)
     private const val BUFFER_SIZE = 8 * 1024 * 1024 // 8MB chunks for streaming
 
     // Counter to ensure IV uniqueness within a session (additional safety)
@@ -53,21 +53,12 @@ object CryptoHelper {
     }
 
     fun generateKeyFromSecret(secret: String, salt: ByteArray = generateSalt()): Pair<SecretKeySpec, ByteArray> {
+        // Only accept 256-bit hex keys - no legacy support
         val secretBytes = if (secret.length == 64 && secret.matches(Regex("[0-9a-fA-F]{64}"))) {
-            // New format: 256-bit hex key - convert hex to bytes
+            // Convert hex to bytes
             secret.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         } else {
-            // Legacy format: UUID or other string - use PBKDF2
-            val secretChars = secret.toCharArray()
-            try {
-                val spec = PBEKeySpec(secretChars, salt, PBKDF2_ITERATIONS, 256)
-                val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-                val keyBytes = factory.generateSecret(spec).encoded
-                spec.clearPassword()
-                keyBytes
-            } finally {
-                Arrays.fill(secretChars, ' ')
-            }
+            throw IllegalArgumentException("Secret must be exactly 64 hexadecimal characters (256-bit key)")
         }
 
         return try {
@@ -442,3 +433,4 @@ object CryptoHelper {
         }
     }
 }
+
