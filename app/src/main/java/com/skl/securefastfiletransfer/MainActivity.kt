@@ -214,6 +214,28 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     }
                 }
 
+                FileTransferService.ACTION_SENDER_STATUS_UPDATE -> {
+                    val operationType = intent.getStringExtra(FileTransferService.EXTRA_OPERATION_TYPE) ?: ""
+                    val verificationProgress = intent.getIntExtra(FileTransferService.EXTRA_VERIFICATION_PROGRESS, 0)
+                    val message = intent.getStringExtra("message") ?: ""
+
+                    runOnUiThread {
+                        when (operationType) {
+                            "file_sent_waiting_verification" -> {
+                                status = "✅ File sent successfully! Waiting for receiver verification..."
+                                isTransferInProgress = true // Keep showing progress indicator
+                                transferProgress = 1f // Show as complete for sending part
+                            }
+                            "receiver_verifying" -> {
+                                status = "🔍 Receiver verifying file integrity... $verificationProgress%"
+                                isTransferInProgress = true
+                                // Use verification progress for display
+                                transferProgress = verificationProgress / 100f
+                            }
+                        }
+                    }
+                }
+
                 FileTransferService.ACTION_TRANSFER_COMPLETE -> {
                     val success = intent.getBooleanExtra("success", false)
                     val message = intent.getStringExtra("message") ?: "Unknown result"
@@ -286,6 +308,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         val filter = IntentFilter().apply {
             addAction(FileTransferService.ACTION_TRANSFER_PROGRESS)
             addAction(FileTransferService.ACTION_TRANSFER_COMPLETE)
+            addAction(FileTransferService.ACTION_SENDER_STATUS_UPDATE) // Register new action
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fileTransferReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
