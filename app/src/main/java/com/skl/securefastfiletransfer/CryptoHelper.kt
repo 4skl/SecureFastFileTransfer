@@ -176,7 +176,8 @@ object CryptoHelper {
         outputStream: OutputStream,
         secret: String,
         progressCallback: ((bytesProcessed: Long, fileName: String?, fileSize: Long?) -> Unit)? = null,
-        integrityCheckCallback: (() -> Unit)? = null
+        integrityCheckCallback: (() -> Unit)? = null,
+        verificationProgressCallback: ((progress: Int) -> Unit)? = null // New callback for verification progress
     ): Boolean {
         return try {
             // Read salt and IV first
@@ -281,6 +282,7 @@ object CryptoHelper {
             // Verify HMAC from the last HMAC_SIZE bytes
             if (hmacBuffer.size == HMAC_SIZE) {
                 val calculatedHmac = mac.doFinal()
+
                 if (!calculatedHmac.contentEquals(hmacBuffer)) {
                     Log.e("CryptoHelper", "HMAC verification failed - data may be corrupted or tampered")
                     return false
@@ -311,8 +313,30 @@ object CryptoHelper {
     }
 
     /**
-     * TRUE STREAMING ENCRYPTION - encrypts and sends chunks with adaptive buffer sizing
+     * Generate a secure secret key for file encryption
      */
+    fun generateSecureSecret(): String {
+        val keyBytes = ByteArray(32) // 256 bits
+        SecureRandom().nextBytes(keyBytes)
+        return keyBytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Validate if a secret is properly formatted
+     */
+    fun isValidSecret(secret: String): Boolean {
+        return secret.length == 64 && secret.matches(Regex("[0-9a-fA-F]{64}"))
+    }
+
+    /**
+     * Sanitize a secret string (remove whitespace, convert to lowercase)
+     */
+    fun sanitizeSecret(secret: String): String? {
+        val cleaned = secret.trim().lowercase().replace("\\s".toRegex(), "")
+        return if (isValidSecret(cleaned)) cleaned else null
+    }
+
+    // STREAMING ENCRYPTION with progress reporting
     fun encryptFileStreamWithProgress(
         inputStream: InputStream,
         outputStream: OutputStream,
@@ -326,7 +350,7 @@ object CryptoHelper {
             val salt = generateSalt()
             val iv = generateUniqueIV()
 
-            // Derive encryption and HMAC keys
+            // Derive keys
             val (encryptionKey, hmacKey) = deriveKeys(secret, salt)
 
             // Initialize HMAC for authentication
@@ -346,207 +370,65 @@ object CryptoHelper {
             val ctrSpec = IvParameterSpec(iv)
             ctrCipher.init(Cipher.ENCRYPT_MODE, encryptionKey, ctrSpec)
 
-            // Create and encrypt file header (still using fixed BUFFER_SIZE for compatibility)
+            // Create and encrypt file header
             val fileHeader = createFileHeader(fileName, fileSize)
             val encryptedHeader = ctrCipher.update(fileHeader)
             mac.update(encryptedHeader)
             outputStream.write(encryptedHeader)
-            outputStream.flush()
 
-            Log.d("CryptoHelper", "Encrypted file header written: fileName=$fileName, fileSize=$fileSize, bufferSize=${BUFFER_SIZE/1024/1024}MB")
-
-            // Stream the actual file data using fixed 1MB buffer
+            // Stream encryption with progress tracking
             val buffer = ByteArray(BUFFER_SIZE)
-            var bytesProcessed = 0L
-            var startTime = System.currentTimeMillis()
-            var lastUpdateTime = startTime
+            var totalBytesRead = 0L
+            val startTime = System.currentTimeMillis()
+            var lastProgressUpdate = startTime
 
             while (true) {
                 val bytesRead = inputStream.read(buffer)
                 if (bytesRead == -1) break
 
-                // Create chunk with actual data size
-                val dataChunk = if (bytesRead == BUFFER_SIZE) {
-                    buffer
-                } else {
-                    buffer.copyOf(bytesRead)
-                }
+                // Encrypt the chunk
+                val encryptedChunk = ctrCipher.update(buffer, 0, bytesRead)
+                mac.update(encryptedChunk)
+                outputStream.write(encryptedChunk)
 
-                // Encrypt and write this chunk immediately
-                val encryptedChunk = ctrCipher.update(dataChunk)
-                if (encryptedChunk != null && encryptedChunk.isNotEmpty()) {
-                    mac.update(encryptedChunk)
-                    outputStream.write(encryptedChunk)
-                    outputStream.flush() // Force immediate write to network
-                }
+                totalBytesRead += bytesRead
 
-                bytesProcessed += bytesRead
-
+                // Report progress
                 val currentTime = System.currentTimeMillis()
-                // Report progress every 100ms for smooth updates
-                if (progressCallback != null && (currentTime - lastUpdateTime > 100)) {
+                if (progressCallback != null && (currentTime - lastProgressUpdate > 100)) {
                     val elapsedSeconds = (currentTime - startTime) / 1000f
-                    val speed = if (elapsedSeconds > 0.1f) bytesProcessed / elapsedSeconds else 0f
-                    progressCallback(bytesProcessed, fileSize, speed)
-                    lastUpdateTime = currentTime
+                    val speed = if (elapsedSeconds > 0) totalBytesRead / elapsedSeconds else 0f
+                    progressCallback(totalBytesRead, fileSize, speed)
+                    lastProgressUpdate = currentTime
                 }
 
-                // Clear buffer to free memory immediately
+                // Clear buffer
                 buffer.fill(0)
             }
 
             // Finalize encryption
             val finalChunk = ctrCipher.doFinal()
-            if (finalChunk != null && finalChunk.isNotEmpty()) {
+            if (finalChunk.isNotEmpty()) {
                 mac.update(finalChunk)
                 outputStream.write(finalChunk)
             }
 
-            // Write HMAC for authentication
+            // Write HMAC at the end
             val hmac = mac.doFinal()
             outputStream.write(hmac)
             outputStream.flush()
 
             // Final progress update
             val finalTime = System.currentTimeMillis()
-            val totalElapsedSeconds = (finalTime - startTime) / 1000f
-            val finalSpeed = if (totalElapsedSeconds > 0) bytesProcessed / totalElapsedSeconds else 0f
-            progressCallback?.invoke(bytesProcessed, fileSize, finalSpeed)
+            val finalElapsedSeconds = (finalTime - startTime) / 1000f
+            val finalSpeed = if (finalElapsedSeconds > 0) totalBytesRead / finalElapsedSeconds else 0f
+            progressCallback?.invoke(totalBytesRead, fileSize, finalSpeed)
 
-            Log.d("CryptoHelper", "File encrypted successfully with adaptive streaming. Processed $bytesProcessed bytes using ${BUFFER_SIZE/1024/1024}MB buffer")
+            Log.d("CryptoHelper", "File encrypted successfully. Size: $totalBytesRead bytes")
             true
         } catch (e: Exception) {
-            Log.e("CryptoHelper", "Adaptive streaming encryption failed: ${e.message}")
+            Log.e("CryptoHelper", "Streaming encryption failed: ${e.message}")
             false
         }
-    }
-
-    /**
-     * Generate a cryptographically secure 256-bit hex key for use as handshake secret
-     */
-    fun generateSecureSecret(): String {
-        return try {
-            // Use SecureRandom for cryptographically strong random key
-            val secureRandom = SecureRandom()
-            val keyBytes = ByteArray(32) // 256 bits = 32 bytes
-            secureRandom.nextBytes(keyBytes)
-
-            // Convert to hex string
-            val hexKey = keyBytes.joinToString("") { byte ->
-                "%02x".format(byte)
-            }
-
-            Log.d("CryptoHelper", "Generated secure 256-bit hex key with strong entropy")
-            hexKey
-        } catch (e: Exception) {
-            Log.e("CryptoHelper", "Failed to generate secure secret", e)
-            // Fallback - should never happen but better safe than sorry
-            val fallbackRandom = SecureRandom()
-            val fallbackBytes = ByteArray(32)
-            fallbackRandom.nextBytes(fallbackBytes)
-            fallbackBytes.joinToString("") { "%02x".format(it) }
-        }
-    }
-
-    /**
-     * Enhanced validation for secrets with multiple security checks for 256-bit hex keys
-     */
-    fun isValidSecret(secret: String?): Boolean {
-        if (secret.isNullOrBlank()) {
-            Log.w("CryptoHelper", "Empty or null secret provided")
-            return false
-        }
-
-        return try {
-            // First sanitize the input
-            val sanitized = sanitizeSecret(secret) ?: return false
-
-            // Check if it's a valid 256-bit hex key format (64 hex characters)
-            val isValidLength = sanitized.length == MIN_SECRET_LENGTH
-            val hasValidFormat = sanitized.matches(Regex("[0-9a-fA-F]{64}"))
-            val isNotAllZeros = sanitized != "0".repeat(64) // Reject all-zero key
-            val isNotAllOnes = sanitized.uppercase() != "F".repeat(64) // Reject all-ones key
-
-            val isValid = isValidLength && hasValidFormat && isNotAllZeros && isNotAllOnes
-
-            if (!isValid) {
-                Log.w("CryptoHelper", "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notAllZeros=$isNotAllZeros, notAllOnes=$isNotAllOnes")
-            } else {
-                Log.d("CryptoHelper", "Secret validation successful")
-            }
-
-            isValid
-        } catch (e: Exception) {
-            Log.e("CryptoHelper", "Unexpected error during secret validation", e)
-            false
-        }
-    }
-
-    /**
-     * Sanitize secret text to remove any potential malicious content
-     */
-    fun sanitizeSecret(secret: String?): String? {
-        if (secret.isNullOrBlank()) return null
-
-        return try {
-            // Remove any whitespace and control characters
-            val cleaned = secret.trim().replace(Regex("[\\p{Cntrl}]"), "")
-
-            // Limit length to prevent DoS attacks
-            val maxLength = 100 // Reasonable limit for hex key + some margin
-            val truncated = if (cleaned.length > maxLength) {
-                Log.w("CryptoHelper", "Input text too long, truncating from ${cleaned.length} to $maxLength characters")
-                cleaned.take(maxLength)
-            } else {
-                cleaned
-            }
-
-            // Only allow hex characters (0-9, a-f, A-F)
-            val sanitized = truncated.replace(Regex("[^a-fA-F0-9]"), "")
-
-            if (sanitized != truncated) {
-                Log.w("CryptoHelper", "Removed non-hex characters from input")
-            }
-
-            // Return null if the sanitized string is too short to be a valid hex key
-            if (sanitized.length < MIN_SECRET_LENGTH) {
-                Log.w("CryptoHelper", "Sanitized text too short to be a valid hex key: ${sanitized.length}")
-                return null
-            }
-
-            Log.d("CryptoHelper", "Successfully sanitized secret")
-            sanitized
-        } catch (e: Exception) {
-            Log.e("CryptoHelper", "Error sanitizing secret", e)
-            null
-        }
-    }
-
-    /**
-     * Check if the secret contains repeating patterns
-     */
-    private fun isRepeatingPattern(secret: String): Boolean {
-        val cleaned = secret.lowercase()
-
-        // Check for repeating characters (more than 4 in a row)
-        for (i in 0 until cleaned.length - 4) {
-            val char = cleaned[i]
-            if (cleaned.substring(i, i + 5).all { it == char }) {
-                return true
-            }
-        }
-
-        // Check for repeating short patterns
-        for (patternLength in 2..8) {
-            for (i in 0 until cleaned.length - (patternLength * 2)) {
-                val pattern = cleaned.substring(i, i + patternLength)
-                val nextPart = cleaned.substring(i + patternLength, i + patternLength * 2)
-                if (pattern == nextPart) {
-                    return true
-                }
-            }
-        }
-
-        return false
     }
 }

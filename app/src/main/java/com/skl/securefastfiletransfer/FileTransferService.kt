@@ -147,11 +147,6 @@ class FileTransferService : Service() {
             val outputStream = socket.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
-            // Start status notification listener for receiving verification updates from receiver
-            val statusListenerJob = serviceScope.launch {
-                listenForReceiverStatusUpdates(hostAddress)
-            }
-
             // Simple progress reporting callback without artificial phase detection
             val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
                 // Broadcast progress on main thread to avoid blocking transfer
@@ -187,26 +182,7 @@ class FileTransferService : Service() {
 
             Log.d("FileTransferService", "File encrypted and streamed successfully: $actualFileName")
 
-            // Update status to indicate file sent, waiting for verification
-            launch(Dispatchers.Main) {
-                val statusIntent = Intent(ACTION_SENDER_STATUS_UPDATE)
-                statusIntent.setPackage(packageName)
-                statusIntent.putExtra(EXTRA_OPERATION_TYPE, "file_sent_waiting_verification")
-                statusIntent.putExtra("message", "File sent successfully. Waiting for receiver verification...")
-                sendBroadcast(statusIntent)
-            }
-
-            // Wait for verification updates from receiver (timeout after 2 minutes)
-            try {
-                withTimeout(120000) { // 2 minutes timeout
-                    statusListenerJob.join()
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.w("FileTransferService", "Timeout waiting for receiver verification status")
-                statusListenerJob.cancel()
-            }
-
-            // Broadcast final success (this will be overridden if verification status is received)
+            // Broadcast final success immediately after transfer completes
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)
@@ -285,7 +261,7 @@ class FileTransferService : Service() {
 
                 Log.d("FileTransferService", "File encrypted and streamed successfully from URI: $fileName")
 
-                // Broadcast success
+                // Broadcast final success immediately after transfer completes
                 val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
                 broadcastIntent.setPackage(packageName)
                 broadcastIntent.putExtra("success", true)
@@ -306,7 +282,6 @@ class FileTransferService : Service() {
     }
 
     private suspend fun receiveFile(secret: String, saveDirectoryUri: Uri?) = withContext(Dispatchers.IO) {
-        var senderIp: String? = null
         try {
             serverSocket = ServerSocket(FILE_TRANSFER_PORT)
             serverSocket?.soTimeout = 0 // No timeout - wait indefinitely for connection
@@ -323,12 +298,11 @@ class FileTransferService : Service() {
             sendBroadcast(waitingIntent)
 
             val socket = serverSocket?.accept()
-            senderIp = socket?.inetAddress?.hostAddress // Capture sender IP for status updates
             socket?.soTimeout = 0 // No timeout during data operations
             val inputStream = socket?.getInputStream()
             val dataInputStream = DataInputStream(inputStream)
 
-            Log.d("FileTransferService", "Receiving encrypted file from: $senderIp")
+            Log.d("FileTransferService", "Receiving encrypted file")
 
             // Broadcast that decryption is starting
             val decryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -391,7 +365,7 @@ class FileTransferService : Service() {
                 }
             }
 
-            // Enhanced integrity check callback with sender notification
+            // Integrity check callback - only for receiver's own verification display
             val integrityCheckCallback: () -> Unit = {
                 launch(Dispatchers.Main) {
                     val integrityIntent = Intent(ACTION_TRANSFER_PROGRESS)
@@ -403,15 +377,7 @@ class FileTransferService : Service() {
                     integrityIntent.putExtra(EXTRA_OPERATION_TYPE, "verifying_integrity")
                     sendBroadcast(integrityIntent)
                 }
-
-                // Notify sender that verification started
-                if (senderIp != null) {
-                    serviceScope.launch {
-                        sendStatusToSender(senderIp, "VERIFICATION_START", 0, "Starting integrity verification")
-                    }
-                }
-
-                Log.d("FileTransferService", "Broadcasting integrity verification status")
+                Log.d("FileTransferService", "Starting integrity verification")
             }
 
             // Create output stream for the decrypted file - handle both selected directory and fallback
@@ -434,12 +400,6 @@ class FileTransferService : Service() {
                                     integrityCheckCallback
                                 )
                                 if (!success) {
-                                    // Notify sender of verification failure
-                                    if (senderIp != null) {
-                                        serviceScope.launch {
-                                            sendStatusToSender(senderIp, "VERIFICATION_FAILED", 0, "File integrity check failed")
-                                        }
-                                    }
                                     throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                                 }
                             }
@@ -488,12 +448,6 @@ class FileTransferService : Service() {
                             integrityCheckCallback
                         )
                         if (!success) {
-                            // Notify sender of verification failure
-                            if (senderIp != null) {
-                                serviceScope.launch {
-                                    sendStatusToSender(senderIp, "VERIFICATION_FAILED", 0, "File integrity check failed")
-                                }
-                            }
                             throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                         }
                     }
@@ -512,12 +466,6 @@ class FileTransferService : Service() {
                         integrityCheckCallback
                     )
                     if (!success) {
-                        // Notify sender of verification failure
-                        if (senderIp != null) {
-                            serviceScope.launch {
-                                sendStatusToSender(senderIp, "VERIFICATION_FAILED", 0, "File integrity check failed")
-                            }
-                        }
                         throw Exception("Failed to decrypt file - incorrect secret or corrupted data")
                     }
                 }
@@ -532,13 +480,6 @@ class FileTransferService : Service() {
             Log.d("FileTransferService", "File saved to: $savedFilePath")
             Log.d("FileTransferService", "Original filename: ${receivedFileName ?: "unknown"}")
 
-            // Notify sender of successful verification
-            if (senderIp != null) {
-                serviceScope.launch {
-                    sendStatusToSender(senderIp, "VERIFICATION_COMPLETE", 100, "File received and verified successfully")
-                }
-            }
-
             // Broadcast success with file path and filename
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
@@ -550,13 +491,6 @@ class FileTransferService : Service() {
 
         } catch (e: Exception) {
             Log.e("FileTransferService", "Error receiving file: ${e.message}")
-
-            // Notify sender of failure if we have the IP
-            if (senderIp != null) {
-                serviceScope.launch {
-                    sendStatusToSender(senderIp, "VERIFICATION_FAILED", 0, "Reception failed: ${e.message}")
-                }
-            }
 
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
