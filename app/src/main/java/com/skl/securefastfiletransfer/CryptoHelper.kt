@@ -17,13 +17,7 @@ object CryptoHelper {
     private const val HMAC_SIZE = 32 // 256 bits for SHA256
     private const val SALT_SIZE = 16
     private const val MIN_SECRET_LENGTH = 64 // Enforce exactly 64 hex characters (256-bit keys only)
-    private const val BUFFER_SIZE = 8 * 1024 * 1024 // 8MB chunks for streaming (base size)
-
-    // Adaptive buffer sizing constants
-    private const val MIN_BUFFER_SIZE = 4 * 1024 * 1024 // 4MB minimum
-    private const val MAX_BUFFER_SIZE = 100 * 1024 * 1024 // 100MB maximum for modern devices
-    private const val LARGE_FILE_THRESHOLD = 100 * 1024 * 1024 // 100MB - files larger than this get adaptive buffers
-    private const val HUGE_FILE_THRESHOLD = 1024 * 1024 * 1024 // 1GB - files larger than this get maximum buffers
+    private const val BUFFER_SIZE = 1 * 1024 * 1024 // 1MB chunks for streaming
 
     // Counter to ensure IV uniqueness within a session (additional safety)
     @Volatile
@@ -230,15 +224,11 @@ object CryptoHelper {
 
             Log.d("CryptoHelper", "Decrypted file header: fileName=$fileName, fileSize=$fileSize")
 
-            // Calculate adaptive buffer size for file data based on the discovered file size
-            val adaptiveBufferSize = if (fileSize > 0) calculateAdaptiveBufferSize(fileSize) else BUFFER_SIZE
-            Log.d("CryptoHelper", "Using adaptive buffer size: ${adaptiveBufferSize/1024/1024}MB for file data")
-
             // Report initial progress with filename
             progressCallback?.invoke(0L, fileName, fileSize)
 
-            // Stream the actual file data using adaptive buffer size
-            val buffer = ByteArray(adaptiveBufferSize)
+            // Stream the actual file data using fixed 1MB buffer
+            val buffer = ByteArray(BUFFER_SIZE)
             var fileBytesWritten = 0L
             var lastUpdateTime = System.currentTimeMillis()
             var hmacBuffer = ByteArray(0) // Buffer to collect data for HMAC verification
@@ -312,7 +302,7 @@ object CryptoHelper {
             // Final progress update
             progressCallback?.invoke(fileBytesWritten, fileName, fileSize)
 
-            Log.d("CryptoHelper", "File decrypted successfully with adaptive streaming. Processed $fileBytesWritten bytes using ${adaptiveBufferSize/1024/1024}MB buffer")
+            Log.d("CryptoHelper", "File decrypted successfully with adaptive streaming. Processed $fileBytesWritten bytes using ${BUFFER_SIZE/1024/1024}MB buffer")
             true
         } catch (e: Exception) {
             Log.e("CryptoHelper", "Adaptive streaming decryption failed: ${e.message}")
@@ -332,9 +322,6 @@ object CryptoHelper {
         progressCallback: ((bytesProcessed: Long, totalBytes: Long, speed: Float) -> Unit)? = null
     ): Boolean {
         return try {
-            // Calculate adaptive buffer size based on file size
-            val adaptiveBufferSize = calculateAdaptiveBufferSize(fileSize)
-
             // Generate salt and IV
             val salt = generateSalt()
             val iv = generateUniqueIV()
@@ -366,10 +353,10 @@ object CryptoHelper {
             outputStream.write(encryptedHeader)
             outputStream.flush()
 
-            Log.d("CryptoHelper", "Encrypted file header written: fileName=$fileName, fileSize=$fileSize, adaptiveBufferSize=${adaptiveBufferSize/1024/1024}MB")
+            Log.d("CryptoHelper", "Encrypted file header written: fileName=$fileName, fileSize=$fileSize, bufferSize=${BUFFER_SIZE/1024/1024}MB")
 
-            // Stream the actual file data using adaptive buffer size
-            val buffer = ByteArray(adaptiveBufferSize)
+            // Stream the actual file data using fixed 1MB buffer
+            val buffer = ByteArray(BUFFER_SIZE)
             var bytesProcessed = 0L
             var startTime = System.currentTimeMillis()
             var lastUpdateTime = startTime
@@ -379,7 +366,7 @@ object CryptoHelper {
                 if (bytesRead == -1) break
 
                 // Create chunk with actual data size
-                val dataChunk = if (bytesRead == adaptiveBufferSize) {
+                val dataChunk = if (bytesRead == BUFFER_SIZE) {
                     buffer
                 } else {
                     buffer.copyOf(bytesRead)
@@ -426,7 +413,7 @@ object CryptoHelper {
             val finalSpeed = if (totalElapsedSeconds > 0) bytesProcessed / totalElapsedSeconds else 0f
             progressCallback?.invoke(bytesProcessed, fileSize, finalSpeed)
 
-            Log.d("CryptoHelper", "File encrypted successfully with adaptive streaming. Processed $bytesProcessed bytes using ${adaptiveBufferSize/1024/1024}MB buffer")
+            Log.d("CryptoHelper", "File encrypted successfully with adaptive streaming. Processed $bytesProcessed bytes using ${BUFFER_SIZE/1024/1024}MB buffer")
             true
         } catch (e: Exception) {
             Log.e("CryptoHelper", "Adaptive streaming encryption failed: ${e.message}")
@@ -561,49 +548,5 @@ object CryptoHelper {
         }
 
         return false
-    }
-
-    /**
-     * Calculate adaptive buffer size based on file size and available memory
-     */
-    private fun calculateAdaptiveBufferSize(fileSize: Long): Int {
-        return try {
-            // Get available memory
-            val runtime = Runtime.getRuntime()
-            val maxMemory = runtime.maxMemory()
-            val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-            val availableMemory = maxMemory - usedMemory
-
-            // Calculate buffer size based on file size and available memory
-            val bufferSize = when {
-                fileSize < LARGE_FILE_THRESHOLD -> {
-                    // Small files: use standard 8MB buffer
-                    BUFFER_SIZE
-                }
-                fileSize < HUGE_FILE_THRESHOLD -> {
-                    // Large files (100MB - 1GB): scale buffer from 16MB to 64MB
-                    val scaleFactor = (fileSize - LARGE_FILE_THRESHOLD).toFloat() / (HUGE_FILE_THRESHOLD - LARGE_FILE_THRESHOLD)
-                    val scaledSize = (16 * 1024 * 1024 + scaleFactor * (64 - 16) * 1024 * 1024).toInt()
-                    scaledSize
-                }
-                else -> {
-                    // Huge files (>1GB): use maximum buffer if memory allows
-                    MAX_BUFFER_SIZE
-                }
-            }
-
-            // Ensure buffer doesn't exceed 10% of available memory to avoid OOM
-            val memoryConstrainedSize = (availableMemory * 0.1).toInt()
-            val finalSize = minOf(bufferSize, memoryConstrainedSize, MAX_BUFFER_SIZE)
-            val clampedSize = maxOf(finalSize, MIN_BUFFER_SIZE)
-
-            Log.d("CryptoHelper", "Adaptive buffer sizing: fileSize=${fileSize/1024/1024}MB, " +
-                    "availableMemory=${availableMemory/1024/1024}MB, bufferSize=${clampedSize/1024/1024}MB")
-
-            clampedSize
-        } catch (e: Exception) {
-            Log.w("CryptoHelper", "Failed to calculate adaptive buffer size, using default: ${e.message}")
-            BUFFER_SIZE
-        }
     }
 }

@@ -170,11 +170,12 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     status = when (operationType) {
                         "encrypting" -> "🔐 Encrypting file... ${(transferProgress * 100).toInt()}%"
                         "encrypting_and_sending" -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (totalBytes > 0) {
                                 val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
-                                "📤 Encrypting and sending: $progressText (${(transferProgress * 100).toInt()}%)"
+                                "📤 Encrypting and sending: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
                             } else {
-                                "📤 Encrypting and sending: ${formatBytes(bytesProcessed)}"
+                                "📤 Encrypting and sending: ${formatBytes(bytesProcessed)}$speedText"
                             }
                         }
                         "sending" -> {
@@ -188,11 +189,12 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         }
                         "waiting_for_connection" -> "⏳ Waiting for sender connection..."
                         "receiving_and_decrypting" -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (totalBytes > 0) {
                                 val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
-                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)"
+                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
                             } else {
-                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}$speedText"
                             }
                         }
                         "verifying_integrity" -> "🔍 Verifying file integrity..."
