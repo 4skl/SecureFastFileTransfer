@@ -480,13 +480,10 @@ object CryptoHelper {
             val isNotAllZeros = sanitized != "0".repeat(64) // Reject all-zero key
             val isNotAllOnes = sanitized.uppercase() != "F".repeat(64) // Reject all-ones key
 
-            // Use the validateSecretStrength method for additional validation
-            val hasGoodStrength = validateSecretStrength(sanitized)
-
-            val isValid = isValidLength && hasValidFormat && isNotAllZeros && isNotAllOnes && hasGoodStrength
+            val isValid = isValidLength && hasValidFormat && isNotAllZeros && isNotAllOnes
 
             if (!isValid) {
-                Log.w("CryptoHelper", "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notAllZeros=$isNotAllZeros, notAllOnes=$isNotAllOnes, strength=$hasGoodStrength")
+                Log.w("CryptoHelper", "Secret validation failed: length=$isValidLength, format=$hasValidFormat, notAllZeros=$isNotAllZeros, notAllOnes=$isNotAllOnes")
             } else {
                 Log.d("CryptoHelper", "Secret validation successful")
             }
@@ -496,35 +493,6 @@ object CryptoHelper {
             Log.e("CryptoHelper", "Unexpected error during secret validation", e)
             false
         }
-    }
-
-    /**
-     * Validate the strength of a secret for cryptographic use
-     */
-    fun validateSecretStrength(secret: String): Boolean {
-        if (secret.length < MIN_SECRET_LENGTH) {
-            Log.w("CryptoHelper", "Secret too short: ${secret.length} < $MIN_SECRET_LENGTH")
-            return false
-        }
-
-        // For hex keys, check for sufficient entropy (mix of different hex digits)
-        val hexDigits = secret.lowercase().toCharArray().distinct()
-        val hasGoodEntropy = hexDigits.size >= 8 // At least 8 different hex digits
-
-        if (!hasGoodEntropy) {
-            Log.w("CryptoHelper", "Secret has insufficient entropy: only ${hexDigits.size} different hex digits")
-        }
-
-        // Additional check: ensure it's not a predictable pattern
-        val isNotRepeating = !isRepeatingPattern(secret)
-
-        val isStrong = hasGoodEntropy && isNotRepeating
-
-        if (!isStrong) {
-            Log.w("CryptoHelper", "Secret failed strength validation: entropy=$hasGoodEntropy, notRepeating=$isNotRepeating")
-        }
-
-        return isStrong
     }
 
     /**

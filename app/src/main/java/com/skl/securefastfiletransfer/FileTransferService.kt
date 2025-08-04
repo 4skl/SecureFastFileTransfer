@@ -23,6 +23,8 @@ class FileTransferService : Service() {
         const val ACTION_RECEIVE_FILE = "com.skl.securefastfiletransfer.RECEIVE_FILE"
         const val ACTION_STOP_SERVICE = "com.skl.securefastfiletransfer.STOP_SERVICE"
         const val EXTRA_FILE_PATH = "file_path"
+        const val EXTRA_FILE_URI = "file_uri"
+        const val EXTRA_FILE_NAME = "file_name"
         const val EXTRA_HOST = "host_address"
         const val EXTRA_SECRET = "shared_secret"
         const val EXTRA_SAVE_DIRECTORY_URI = "save_directory_uri"
@@ -41,6 +43,8 @@ class FileTransferService : Service() {
             context: Context,
             action: String,
             filePath: String? = null,
+            fileUri: Uri? = null,
+            fileName: String? = null,
             hostAddress: String? = null,
             secret: String,
             saveDirectoryUri: Uri? = null
@@ -49,6 +53,8 @@ class FileTransferService : Service() {
                 this.action = action
                 putExtra(EXTRA_SECRET, secret)
                 filePath?.let { putExtra(EXTRA_FILE_PATH, it) }
+                fileUri?.let { putExtra(EXTRA_FILE_URI, it.toString()) }
+                fileName?.let { putExtra(EXTRA_FILE_NAME, it) }
                 hostAddress?.let { putExtra(EXTRA_HOST, it) }
                 saveDirectoryUri?.let { putExtra(EXTRA_SAVE_DIRECTORY_URI, it.toString()) }
             }
@@ -71,11 +77,21 @@ class FileTransferService : Service() {
         when (intent.action) {
             ACTION_SEND_FILE -> {
                 val filePath = intent.getStringExtra(EXTRA_FILE_PATH)
+                val fileUriString = intent.getStringExtra(EXTRA_FILE_URI)
+                val fileName = intent.getStringExtra(EXTRA_FILE_NAME)
                 val hostAddress = intent.getStringExtra(EXTRA_HOST)
                 val secret = intent.getStringExtra(EXTRA_SECRET)
-                if (filePath != null && hostAddress != null && secret != null) {
+
+                if (hostAddress != null && secret != null) {
                     serviceScope.launch {
-                        sendFile(filePath, hostAddress, secret)
+                        // Use URI-based streaming if available, otherwise fall back to file path
+                        if (fileUriString != null && fileName != null) {
+                            sendFileFromUri(fileUriString.toUri(), fileName, hostAddress, secret)
+                        } else if (filePath != null) {
+                            sendFile(filePath, hostAddress, secret)
+                        } else {
+                            Log.e("FileTransferService", "No file source provided")
+                        }
                         stopSelf(startId)
                     }
                 } else {
@@ -180,6 +196,88 @@ class FileTransferService : Service() {
         }
     }
 
+    private suspend fun sendFileFromUri(fileUri: Uri, fileName: String, hostAddress: String, secret: String) = withContext(Dispatchers.IO) {
+        try {
+            // Get file size from URI first for proper progress reporting
+            val fileSize = try {
+                contentResolver.openFileDescriptor(fileUri, "r")?.use { pfd ->
+                    pfd.statSize
+                } ?: run {
+                    // Fallback method if file descriptor not available
+                    contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                        inputStream.available().toLong()
+                    } ?: -1L
+                }
+            } catch (e: Exception) {
+                Log.e("FileTransferService", "Failed to get file size from URI: ${e.message}")
+                -1L
+            }
+
+            Log.d("FileTransferService", "Starting encryption and streaming of file: $fileName (size: $fileSize bytes)")
+
+            // ContentResolver to open input stream for the URI
+            contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                // Create a socket connection
+                val socket = Socket()
+                socket.connect(java.net.InetSocketAddress(hostAddress, FILE_TRANSFER_PORT))
+                socket.soTimeout = 0 // No timeout during data operations
+
+                val outputStream = socket.getOutputStream()
+                val dataOutputStream = DataOutputStream(outputStream)
+
+                // Simple progress reporting callback
+                val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
+                    // Broadcast progress on main thread to avoid blocking transfer
+                    launch(Dispatchers.Main) {
+                        val progressIntent = Intent(ACTION_TRANSFER_PROGRESS)
+                        progressIntent.setPackage(packageName)
+                        progressIntent.putExtra(EXTRA_PROGRESS_BYTES, bytesProcessed)
+                        progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
+                        progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
+                        progressIntent.putExtra(EXTRA_IS_SENDING, true)
+                        progressIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting_and_sending")
+                        sendBroadcast(progressIntent)
+                    }
+                }
+
+                // Stream encryption directly from URI to network
+                val success = CryptoHelper.encryptFileStreamWithProgress(
+                    inputStream,
+                    dataOutputStream,
+                    secret,
+                    fileSize, // Use the actual file size we retrieved
+                    fileName, // Use the provided file name
+                    progressCallback
+                )
+                if (!success) {
+                    throw Exception("Failed to encrypt and stream file from URI")
+                }
+
+                dataOutputStream.close()
+                socket.close()
+
+                Log.d("FileTransferService", "File encrypted and streamed successfully from URI: $fileName")
+
+                // Broadcast success
+                val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+                broadcastIntent.setPackage(packageName)
+                broadcastIntent.putExtra("success", true)
+                broadcastIntent.putExtra("message", "File sent successfully")
+                sendBroadcast(broadcastIntent)
+
+            } ?: run {
+                throw Exception("Failed to open input stream for URI: $fileUri")
+            }
+        } catch (e: Exception) {
+            Log.e("FileTransferService", "Error sending file from URI: ${e.message}")
+            val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
+            broadcastIntent.setPackage(packageName)
+            broadcastIntent.putExtra("success", false)
+            broadcastIntent.putExtra("message", "Failed to send file from URI: ${e.message}")
+            sendBroadcast(broadcastIntent)
+        }
+    }
+
     private suspend fun receiveFile(secret: String, saveDirectoryUri: Uri?) = withContext(Dispatchers.IO) {
         try {
             serverSocket = ServerSocket(FILE_TRANSFER_PORT)
@@ -245,12 +343,11 @@ class FileTransferService : Service() {
                             progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalFileSize)
                         }
 
-                        // Calculate speed based on total elapsed time and bytes processed
+                        // Calculate speed based on overall transfer performance
                         val elapsedSeconds = (currentTime - startTime) / 1000f
                         val speed = if (elapsedSeconds > 0.1f) { // Avoid division by very small numbers
-                            val bytesSinceStart = bytesProcessed - lastBytesProcessed
-                            val timeSinceLastUpdate = (currentTime - lastProgressUpdate) / 1000f
-                            if (timeSinceLastUpdate > 0) bytesSinceStart / timeSinceLastUpdate else 0f
+                            // Use total bytes processed from start for more stable speed calculation
+                            bytesProcessed / elapsedSeconds
                         } else {
                             0f
                         }

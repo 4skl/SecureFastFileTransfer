@@ -170,8 +170,12 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     status = when (operationType) {
                         "encrypting" -> "🔐 Encrypting file... ${(transferProgress * 100).toInt()}%"
                         "encrypting_and_sending" -> {
-                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
-                            "📤 Encrypting and sending... ${(transferProgress * 100).toInt()}%$speedText"
+                            if (totalBytes > 0) {
+                                val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
+                                "📤 Encrypting and sending: $progressText (${(transferProgress * 100).toInt()}%)"
+                            } else {
+                                "📤 Encrypting and sending: ${formatBytes(bytesProcessed)}"
+                            }
                         }
                         "sending" -> {
                             val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
@@ -184,14 +188,14 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         }
                         "waiting_for_connection" -> "⏳ Waiting for sender connection..."
                         "receiving_and_decrypting" -> {
-                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (totalBytes > 0) {
                                 val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
-                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
+                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)"
                             } else {
-                                "📥 Receiving: ${formatBytes(bytesProcessed)}$speedText"
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
                             }
                         }
+                        "verifying_integrity" -> "🔍 Verifying file integrity..."
                         else -> {
                             val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (isSending) {
@@ -1169,35 +1173,15 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             // Use FileTransferService for both sending and receiving to avoid UI thread blocking
             Log.d("MainActivity", "Starting file transfer via FileTransferService - Size: ${formatBytes(fileSize)}")
 
-            // Create a temporary file that FileTransferService can access directly
-            val tempFile = File(cacheDir, "${fileName}_${System.currentTimeMillis()}")
-
-            // Copy selected file to temp location in background
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
-                        tempFile.outputStream().use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
-                    }
-
-                    // Start the service with the temp file that has the correct name
-                    FileTransferService.startService(
-                        context = this@MainActivity,
-                        action = FileTransferService.ACTION_SEND_FILE,
-                        filePath = tempFile.absolutePath,
-                        hostAddress = peerIpAddress!!,
-                        secret = handshakeSecret!!
-                    )
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Failed to prepare file for transfer: ${e.message}")
-                    runOnUiThread {
-                        status = "Transfer failed: ${e.message}"
-                        isTransferInProgress = false
-                        Toast.makeText(this@MainActivity, "Transfer failed: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
+            // Start the service with the selected file URI directly - no temp file needed for streaming
+            FileTransferService.startService(
+                context = this@MainActivity,
+                action = FileTransferService.ACTION_SEND_FILE,
+                fileUri = selectedFileUri!!,
+                fileName = fileName,
+                hostAddress = peerIpAddress!!,
+                secret = handshakeSecret!!
+            )
         } else {
             status = "Ready to receive encrypted file..."
             isTransferInProgress = true
