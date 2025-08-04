@@ -521,6 +521,18 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         ) {
                             Text("📷 Scan QR Code")
                         }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Manual secret entry button for receivers
+                        Button(
+                            onClick = {
+                                showManualSecretDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("⌨️ Enter Secret Manually")
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
