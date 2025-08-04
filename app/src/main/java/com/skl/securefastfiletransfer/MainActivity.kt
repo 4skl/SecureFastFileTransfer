@@ -1166,38 +1166,18 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             status = "Starting encrypted file transfer..."
             isTransferInProgress = true
 
-            // Use FileTransferService for both sending and receiving to avoid UI thread blocking
-            Log.d("MainActivity", "Starting file transfer via FileTransferService - Size: ${formatBytes(fileSize)}")
+            Log.d("MainActivity", "Starting direct URI streaming - NO temp file created - Size: ${formatBytes(fileSize)}")
 
-            // Create a temporary file that FileTransferService can access directly
-            val tempFile = File(cacheDir, "${fileName}_${System.currentTimeMillis()}")
-
-            // Copy selected file to temp location in background
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    contentResolver.openInputStream(selectedFileUri!!)?.use { inputStream ->
-                        tempFile.outputStream().use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
-                    }
-
-                    // Start the service with the temp file that has the correct name
-                    FileTransferService.startService(
-                        context = this@MainActivity,
-                        action = FileTransferService.ACTION_SEND_FILE,
-                        filePath = tempFile.absolutePath,
-                        hostAddress = peerIpAddress!!,
-                        secret = handshakeSecret!!
-                    )
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Failed to prepare file for transfer: ${e.message}")
-                    runOnUiThread {
-                        status = "Transfer failed: ${e.message}"
-                        isTransferInProgress = false
-                        Toast.makeText(this@MainActivity, "Transfer failed: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
+            // Use the new URI-based streaming method - NO TEMP FILE CREATION
+            FileTransferService.startService(
+                context = this,
+                action = FileTransferService.ACTION_SEND_FILE_FROM_URI,
+                fileUri = selectedFileUri!!,
+                fileName = fileName,
+                fileSize = fileSize,
+                hostAddress = peerIpAddress!!,
+                secret = handshakeSecret!!
+            )
         } else {
             status = "Ready to receive encrypted file..."
             isTransferInProgress = true
