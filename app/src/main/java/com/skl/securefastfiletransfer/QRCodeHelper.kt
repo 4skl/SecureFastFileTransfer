@@ -21,9 +21,10 @@ object QRCodeHelper {
      */
     fun generateQRCode(secret: String, size: Int = 512): Bitmap? {
         return try {
-            // Validate secret before generating QR code
-            if (!isValidSecret(secret)) {
-                Log.e(TAG, "Invalid secret provided for QR code generation")
+            // For generated secrets, use simple validation (they should already be clean)
+            // Only use complex validation for scanned/user-input secrets
+            if (!secret.matches(Regex("[0-9a-fA-F]{64}"))) {
+                Log.e(TAG, "Invalid secret provided for QR code generation: length=${secret.length}, expected=$HEX_KEY_LENGTH")
                 return null
             }
 
