@@ -118,17 +118,7 @@ class FileTransferService : Service() {
 
             // Get the actual filename from the file path
             val actualFileName = file.name
-            Log.d("FileTransferService", "Starting encryption of file: $actualFileName")
-
-            // Broadcast that encryption is starting
-            val encryptionStartIntent = Intent(ACTION_TRANSFER_PROGRESS)
-            encryptionStartIntent.setPackage(packageName)
-            encryptionStartIntent.putExtra(EXTRA_PROGRESS_BYTES, 0L)
-            encryptionStartIntent.putExtra(EXTRA_TOTAL_BYTES, file.length())
-            encryptionStartIntent.putExtra(EXTRA_TRANSFER_SPEED, 0f)
-            encryptionStartIntent.putExtra(EXTRA_IS_SENDING, true)
-            encryptionStartIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting")
-            sendBroadcast(encryptionStartIntent)
+            Log.d("FileTransferService", "Starting encryption and streaming of file: $actualFileName")
 
             // Create connection (this should be fast)
             val socket = Socket()
@@ -138,8 +128,7 @@ class FileTransferService : Service() {
             val outputStream = socket.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
-            // Enhanced progress reporting callback with encryption phase tracking
-            var encryptionStarted = false
+            // Simple progress reporting callback without artificial phase detection
             val progressCallback: (Long, Long, Float) -> Unit = { bytesProcessed, totalBytes, speed ->
                 // Broadcast progress on main thread to avoid blocking transfer
                 launch(Dispatchers.Main) {
@@ -149,40 +138,32 @@ class FileTransferService : Service() {
                     progressIntent.putExtra(EXTRA_TOTAL_BYTES, totalBytes)
                     progressIntent.putExtra(EXTRA_TRANSFER_SPEED, speed)
                     progressIntent.putExtra(EXTRA_IS_SENDING, true)
-
-                    // Show encryption progress for the first part, then encryption+sending
-                    val operationType = if (!encryptionStarted && bytesProcessed < totalBytes * 0.1) {
-                        "encrypting"
-                    } else {
-                        encryptionStarted = true
-                        "encrypting_and_sending"
-                    }
-                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, operationType)
+                    progressIntent.putExtra(EXTRA_OPERATION_TYPE, "encrypting_and_sending")
                     sendBroadcast(progressIntent)
                 }
             }
 
-            // Encrypt and send the file using streaming with progress - PASS THE ACTUAL FILENAME
+            // Stream encryption directly from file to network - NO TEMP FILE NEEDED
             file.inputStream().use { fileInputStream ->
-                val encryptionMetadata = CryptoHelper.encryptFileStreamWithProgress(
+                val success = CryptoHelper.encryptFileStreamWithProgress(
                     fileInputStream,
                     dataOutputStream,
                     secret,
                     file.length(),
-                    actualFileName, // Use the actual filename instead of generic "file.name"
+                    actualFileName, // Use the actual filename
                     progressCallback
                 )
-                if (encryptionMetadata == null) {
-                    throw Exception("Failed to encrypt file")
+                if (!success) {
+                    throw Exception("Failed to encrypt and stream file")
                 }
             }
 
             dataOutputStream.close()
             socket.close()
 
-            Log.d("FileTransferService", "Encrypted file sent successfully: $actualFileName")
+            Log.d("FileTransferService", "File encrypted and streamed successfully: $actualFileName")
 
-            // Broadcast success with consistent action
+            // Broadcast success
             val broadcastIntent = Intent(ACTION_TRANSFER_COMPLETE)
             broadcastIntent.setPackage(packageName)
             broadcastIntent.putExtra("success", true)

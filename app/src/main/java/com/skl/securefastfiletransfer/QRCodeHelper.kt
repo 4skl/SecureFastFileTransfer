@@ -56,4 +56,25 @@ object QRCodeHelper {
             null
         }
     }
+
+    /**
+     * Enhanced validation for scanned secrets - delegates to CryptoHelper for proper validation
+     */
+    fun isValidSecret(scannedText: String?): Boolean {
+        return CryptoHelper.isValidSecret(scannedText)
+    }
+
+    /**
+     * Sanitize scanned text - delegates to CryptoHelper for proper sanitization
+     */
+    fun sanitizeScannedText(text: String?): String? {
+        return CryptoHelper.sanitizeSecret(text)
+    }
+
+    /**
+     * Generate a cryptographically secure 256-bit hex key - delegates to CryptoHelper
+     */
+    fun generateSecureSecret(): String {
+        return CryptoHelper.generateSecureSecret()
+    }
 }

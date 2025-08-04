@@ -169,26 +169,40 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                     // Update status based on operation type and role
                     status = when (operationType) {
                         "encrypting" -> "🔐 Encrypting file... ${(transferProgress * 100).toInt()}%"
-                        "encrypting_and_sending" -> "📤 Encrypting and sending... ${(transferProgress * 100).toInt()}%"
-                        "waiting_for_connection" -> "⏳ Waiting for sender connection..."
-                        "receiving_and_decrypting" -> {
+                        "encrypting_and_sending" -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
+                            "📤 Encrypting and sending... ${(transferProgress * 100).toInt()}%$speedText"
+                        }
+                        "sending" -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (totalBytes > 0) {
                                 val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
-                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)"
+                                "📤 Sending: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
                             } else {
-                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
+                                "📤 Sending: ${formatBytes(bytesProcessed)}$speedText"
+                            }
+                        }
+                        "waiting_for_connection" -> "⏳ Waiting for sender connection..."
+                        "receiving_and_decrypting" -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
+                            if (totalBytes > 0) {
+                                val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
+                                "📥 Receiving: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
+                            } else {
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}$speedText"
                             }
                         }
                         else -> {
+                            val speedText = if (speed > 0) " (${formatSpeed(speed)})" else ""
                             if (isSending) {
                                 if (totalBytes > 0) {
                                     val progressText = "${formatBytes(bytesProcessed)}/${formatBytes(totalBytes)}"
-                                    "📤 Sending: $progressText (${(transferProgress * 100).toInt()}%)"
+                                    "📤 Sending: $progressText (${(transferProgress * 100).toInt()}%)$speedText"
                                 } else {
-                                    "📤 Sending: ${formatBytes(bytesProcessed)}"
+                                    "📤 Sending: ${formatBytes(bytesProcessed)}$speedText"
                                 }
                             } else {
-                                "📥 Receiving: ${formatBytes(bytesProcessed)}"
+                                "📥 Receiving: ${formatBytes(bytesProcessed)}$speedText"
                             }
                         }
                     }
@@ -461,7 +475,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
 
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = "Share this secret with the receiver device!",
+                                    text = if (isSender) "Share this secret with the receiver device!" else "Verify the secret with the sender device!",
                                     style = MaterialTheme.typography.bodySmall,
                                     textAlign = TextAlign.Center,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -1010,6 +1024,18 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
         }
     }
 
+    /**
+     * Format transfer speed to human readable format
+     */
+    private fun formatSpeed(bytesPerSecond: Float): String {
+        return when {
+            bytesPerSecond >= 1_000_000_000 -> String.format("%.1f GB/s", bytesPerSecond / 1_000_000_000.0)
+            bytesPerSecond >= 1_000_000 -> String.format("%.1f MB/s", bytesPerSecond / 1_000_000.0)
+            bytesPerSecond >= 1_000 -> String.format("%.1f KB/s", bytesPerSecond / 1_000.0)
+            else -> String.format("%.0f B/s", bytesPerSecond)
+        }
+    }
+
     private fun getFileNameFromUri(context: Context, uri: Uri): String? {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
         return cursor?.use {
@@ -1143,8 +1169,8 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
             // Use FileTransferService for both sending and receiving to avoid UI thread blocking
             Log.d("MainActivity", "Starting file transfer via FileTransferService - Size: ${formatBytes(fileSize)}")
 
-            // Create a temporary file path that FileTransferService can access
-            val tempFile = File(cacheDir, "temp_send_${System.currentTimeMillis()}")
+            // Create a temporary file that FileTransferService can access directly
+            val tempFile = File(cacheDir, "${fileName}_${System.currentTimeMillis()}")
 
             // Copy selected file to temp location in background
             lifecycleScope.launch(Dispatchers.IO) {
@@ -1155,7 +1181,7 @@ class MainActivity : ComponentActivity(), WiFiTransferHelper.TransferListener {
                         }
                     }
 
-                    // Now start the service with the temp file
+                    // Start the service with the temp file that has the correct name
                     FileTransferService.startService(
                         context = this@MainActivity,
                         action = FileTransferService.ACTION_SEND_FILE,
