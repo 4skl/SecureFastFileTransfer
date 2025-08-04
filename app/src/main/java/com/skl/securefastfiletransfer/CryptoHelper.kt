@@ -121,14 +121,14 @@ object CryptoHelper {
         val header = "$fileName|$fileSize"
         val headerBytes = header.toByteArray(Charsets.UTF_8)
 
-        // Pad to exactly 1MB with random data to hide actual metadata size
-        val paddedSize = 1024 * 1024 // 1MB
+        // Pad to exactly 8MB (same as BUFFER_SIZE) with random data to hide actual metadata size
+        val paddedSize = BUFFER_SIZE // 8MB to match other chunks
         val paddedHeader = ByteArray(paddedSize)
 
         // Copy header to beginning
         headerBytes.copyInto(paddedHeader, 0)
 
-        // Fill rest with secure random padding - FIX: Use correct method signature
+        // Fill rest with secure random padding
         val random = SecureRandom()
         val paddingBytes = ByteArray(paddedSize - headerBytes.size)
         random.nextBytes(paddingBytes)
