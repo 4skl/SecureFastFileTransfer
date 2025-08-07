@@ -4,6 +4,10 @@
 
 Android application for transferring files between devices on the same local network using **AES-256 encryption** with QR code-based secret sharing.
 
+## 💡 The idea
+<img src="media/diagram.png" alt="Diagram of the idea" width="400">
+
+
 ## 🎥 Demo  
 
 **Video demonstration showing the file transfer process between two Android devices:**
