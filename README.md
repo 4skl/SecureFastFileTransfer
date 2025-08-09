@@ -10,7 +10,7 @@ Android application for transferring files between devices on the same local net
 
 ## 🎥 Demo  
 
-**Video demonstration showing the file transfer process between two Android devices:**
+**Video demonstration showing the file transfer process between two Android devices:**  
 *note that in this demo, the transfer speed is slow cause using a buffer bigger than 1 MB, this have been fixed and I'm working on making this app multiplatform*
 
 [Video demonstration showing the file transfer process between two Android devices](https://github.com/user-attachments/assets/866e1859-77c7-4974-8b6b-01abe0321eec)
